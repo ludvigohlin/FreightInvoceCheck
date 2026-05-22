@@ -1,0 +1,43 @@
+{
+  "reconciliation": {
+    "total_tolerance_ok": 0.01,
+    "total_tolerance_warning": 1.00,
+    "comment": "Absolute difference <= ok threshold → OK. > ok and <= warning → Warning. > warning → Error."
+  },
+  "mandatory_header_fields": {
+    "carrier": "Error",
+    "invoice_number": "Error",
+    "source_file": "Error",
+    "total_ex_vat": "Warning",
+    "invoice_date": "Warning",
+    "currency": "Warning"
+  },
+  "checks": {
+    "pdf_vs_excel_total": {
+      "enabled": true,
+      "severity_mismatch": "Error",
+      "severity_warning": "Warning"
+    },
+    "missing_invoice_number": {
+      "enabled": true,
+      "severity": "Error"
+    },
+    "duplicate_invoice_number": {
+      "enabled": true,
+      "severity": "Warning"
+    },
+    "missing_specification": {
+      "enabled": true,
+      "severity": "Warning"
+    },
+    "unclassified_lines": {
+      "enabled": true,
+      "severity": "Warning"
+    },
+    "line_total_vs_header_total": {
+      "enabled": true,
+      "severity_mismatch": "Error",
+      "severity_warning": "Warning"
+    }
+  }
+}

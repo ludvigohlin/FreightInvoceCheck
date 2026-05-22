@@ -1,0 +1,39 @@
+{
+  "carriers": {
+    "Bring": {
+      "filename_keywords": ["bring", "specificerad", "specificeradfaktura", "fakturanummer"],
+      "pdf_text_keywords": ["Bring E-commerce", "bring.com", "bring.se", "invoicing.se@bring.com"],
+      "document_types": {
+        "Invoice": {
+          "filename_keywords": ["faktura"],
+          "pdf_text_keywords": ["Faktura", "Bring E-commerce"]
+        },
+        "Specification": {
+          "filename_keywords": ["specificerad", "specificeradfaktura", "fakturanummer"],
+          "file_extensions": [".xlsx", ".xls"],
+          "excel_cell_keywords": ["Specificerad faktura", "För fakturanummer"]
+        }
+      }
+    },
+    "PostNord": {
+      "filename_keywords": ["postnord"],
+      "pdf_text_keywords": ["PostNord", "postnord.se", "postnord.com"],
+      "document_types": {
+        "InvoiceAndSpecification": {
+          "filename_keywords": ["faktura"],
+          "pdf_text_keywords": ["PostNord", "Fakturanummer"]
+        },
+        "Invoice": {
+          "filename_keywords": ["faktura"],
+          "pdf_text_keywords": ["PostNord"]
+        }
+      }
+    }
+  },
+  "invoice_number_patterns": [
+    "Fakturanummer[_\\s]+([0-9]+)",
+    "Faktura[\\s]+([0-9]{8,12})",
+    "Fakturanr\\.?[\\s]+([0-9]+)",
+    "([0-9]{10})"
+  ]
+}

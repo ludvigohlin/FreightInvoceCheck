@@ -1,0 +1,22 @@
+{
+  "csv": {
+    "delimiter": ";",
+    "encoding": "utf-8-sig",
+    "comment": "utf-8-sig adds BOM so Excel on Windows opens CSV correctly. Semicolon delimiter for Swedish Excel compatibility."
+  },
+  "summary": {
+    "include_line_details": false,
+    "include_anomaly_list": true,
+    "include_check_details": true,
+    "max_anomalies_in_summary": 20
+  },
+  "file_inventory": {
+    "include_skipped": true,
+    "include_failed": true
+  },
+  "claude_api": {
+    "max_lines_per_batch": 10,
+    "only_classify_unknown": true,
+    "generate_summary_if_enabled": true
+  }
+}

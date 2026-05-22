@@ -1,0 +1,66 @@
+{
+  "_comment": "Maps raw surcharge name keywords to standardized surcharge_category values. Keys are lowercase for matching.",
+  "surcharge_categories": {
+    "Fuel": [
+      "fuel fee",
+      "drivmedelstillägg",
+      "drivmedelstill",
+      "bränsletillägg"
+    ],
+    "Remote Area": [
+      "remote area surcharge",
+      "remote area",
+      "orttillägg",
+      "udda ort"
+    ],
+    "City": [
+      "city surcharge",
+      "storstadstillägg",
+      "citytillägg"
+    ],
+    "Notification": [
+      "telephone notification",
+      "sms-avisering",
+      "sms avisering",
+      "e-postavisering",
+      "e-post avisering",
+      "avisering"
+    ],
+    "Special Handling": [
+      "särskild hantering",
+      "special handling",
+      "privatperson",
+      "privatadress"
+    ],
+    "Heavy": [
+      "heavy ej angiven",
+      "heavy",
+      "tungt gods"
+    ],
+    "Box Address": [
+      "adressering till boxadress",
+      "box address",
+      "boxadress"
+    ],
+    "Sulphur": [
+      "svaveltillägg",
+      "svaveltill",
+      "sulphur"
+    ],
+    "Currency": [
+      "valutatillägg",
+      "currency"
+    ],
+    "Delivery Attempt": [
+      "två utkörningsförsök",
+      "delivery attempt",
+      "utkörning"
+    ],
+    "Return": [
+      "attempted delivery return",
+      "return",
+      "returhantering"
+    ],
+    "Other": []
+  }
+}

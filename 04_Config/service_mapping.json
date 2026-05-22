@@ -1,0 +1,49 @@
+{
+  "_comment": "Maps raw service name keywords to standardized service_category values. Keys are lowercase for matching.",
+  "service_categories": {
+    "Parcel": [
+      "business parcel bulk",
+      "parcel bulk",
+      "mypack collect",
+      "mypack home",
+      "parcel"
+    ],
+    "Pallet": [
+      "business pallet",
+      "pallet",
+      "pallgods"
+    ],
+    "Pickup": [
+      "pickup parcel bulk",
+      "pickup parcel",
+      "pickup pallet",
+      "afhentning"
+    ],
+    "Service Point": [
+      "postnord service point",
+      "service point",
+      "servicepoint"
+    ],
+    "Parcel Locker": [
+      "postnord parcel locker",
+      "parcel locker",
+      "paketbox"
+    ],
+    "Return": [
+      "attempted delivery return",
+      "return parcel",
+      "retur"
+    ],
+    "Other": []
+  },
+  "line_type_by_article_prefix": {
+    "9999": "BaseFreight",
+    "4005": "Surcharge",
+    "4009": "Surcharge",
+    "4027": "Surcharge",
+    "4029": "Surcharge",
+    "4057": "Surcharge",
+    "4069": "Surcharge",
+    "4417": "Surcharge"
+  }
+}

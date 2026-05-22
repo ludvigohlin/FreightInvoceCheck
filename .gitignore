@@ -1,0 +1,34 @@
+# Inbox — real invoice files, never commit
+01_Inbox/
+
+# Output — generated reports and data, never commit
+02_Output/
+
+# Logs — runtime logs, never commit
+03_Logs/
+
+# Secrets and local config
+.env
+*.env
+04_Config/claude_api_key*
+04_Config/*.secret
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp

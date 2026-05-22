@@ -1,0 +1,19 @@
+{
+  "_comment": "Thresholds for anomaly detection. Amounts in invoice currency (default SEK).",
+  "max_parcel_cost": 300,
+  "max_pallet_cost": 2500,
+  "max_pickup_cost": 300,
+  "high_line_amount": 1000,
+  "max_surcharge_share_pct": 25,
+  "max_fuel_share_pct": 20,
+  "high_invoice_total": 100000,
+  "max_parcel_weight_kg": 35,
+  "max_pallet_weight_kg": 1800,
+  "max_cost_per_kg_multiplier": 2.5,
+  "min_expected_lines": 1,
+  "flag_negative_amounts": true,
+  "flag_zero_amounts": true,
+  "flag_unknown_service": true,
+  "flag_unknown_surcharge": true,
+  "flag_missing_invoice_number": true
+}
