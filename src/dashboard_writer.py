@@ -278,11 +278,11 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
 </header>
 
 <div class="filter-bar">
-  <label>Year</label>
+  <label>Invoice Year</label>
   <select id="fYear" onchange="applyFilters()">
     <option value="">All years</option>{year_opts}
   </select>
-  <label>Month</label>
+  <label>Invoice Month</label>
   <select id="fMonth" onchange="applyFilters()">
     <option value="">All months</option>{month_opts}
   </select>
@@ -316,7 +316,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
   <!-- Charts -->
   <div class="charts-row">
     <div class="card">
-      <h2>Monthly Cost by Carrier (SEK) <span class="count" id="chartNote"></span></h2>
+      <h2>Monthly Cost by Carrier ex-VAT (SEK) <span class="count" id="chartNote"></span></h2>
       <canvas id="monthlyChart" height="200"></canvas>
     </div>
     <div class="card">
@@ -327,7 +327,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
 
   <!-- Cost timeline -->
   <div class="card">
-    <h2>Cost Timeline (SEK)
+    <h2>Cost Timeline ex-VAT (SEK)
       <span style="display:flex;align-items:center;gap:12px">
         <span class="count" id="timelineNote"></span>
         <span class="toggle-grp">
@@ -347,8 +347,8 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
         <thead><tr>
           <th>Service Type</th><th>Carrier</th>
           <th class="num">Shipments</th>
-          <th class="num">Total Cost (SEK)</th>
-          <th class="num">Avg / Shipment</th>
+          <th class="num">Total Cost ex-VAT (SEK)</th>
+          <th class="num">Avg / Shipment ex-VAT (SEK)</th>
           <th class="num">% of Total</th>
         </tr></thead>
         <tbody id="svcBody"></tbody>
@@ -382,8 +382,8 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     <div class="table-wrap">
       <table id="invTable">
         <thead><tr>
-          <th>Date</th><th>Carrier</th><th>Invoice#</th>
-          <th class="num">Total ex VAT</th><th>Currency</th><th>Status</th>
+          <th>Invoice Date</th><th>Carrier</th><th>Invoice #</th>
+          <th class="num">Total ex-VAT (SEK)</th><th>Currency</th><th>Status</th>
         </tr></thead>
         <tbody id="invBody"></tbody>
       </table>
@@ -505,7 +505,7 @@ function renderKPIs(invData, svcData) {{
     </div>
     <div class="kpi">
       <div class="value">${{fmtInt(totalCost)}}</div>
-      <div class="label">Total Cost (SEK)</div>
+      <div class="label">Total Cost ex-VAT (SEK)</div>
     </div>
     <div class="kpi">
       <div class="value">${{totalShipments.toLocaleString('sv-SE')}}</div>
@@ -514,7 +514,7 @@ function renderKPIs(invData, svcData) {{
     </div>
     <div class="kpi">
       <div class="value">${{fmtInt(totalSurcharge)}}</div>
-      <div class="label">Total Surcharges (SEK)</div>
+      <div class="label">Total Surcharges ex-VAT (SEK)</div>
       <div class="sub">${{scPct.toFixed(1)}}% of total</div>
     </div>
   `;
@@ -771,9 +771,9 @@ function renderServiceCostTable(filtData) {{
   document.getElementById('svcCostHead').innerHTML = `<tr>
     <th>Service Type</th><th>Carrier</th>
     <th class="num">Shipments</th>
-    <th class="num">Avg Base (SEK)</th>
+    <th class="num">Avg Base ex-VAT (SEK)</th>
     ${{scHeaders}}
-    <th class="num">Avg Total (SEK)</th>
+    <th class="num">Avg Total ex-VAT (SEK)</th>
   </tr>`;
 
   if (!rows.length) {{
