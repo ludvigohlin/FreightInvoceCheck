@@ -138,7 +138,7 @@ def _compute_service_breakdown(lines) -> list[dict]:
 
 # ── Sheet builders ─────────────────────────────────────────────────────────────
 
-def _sheet_run_summary(ws, run_id: str, payload: dict, all_lines) -> None:
+def _sheet_run_summary(ws, run_id: str, payload: dict, all_lines, headers=None) -> None:
     total_amount = sum(ln.amount or 0.0 for ln in all_lines)
     surcharge_amount = sum(
         ln.amount or 0.0 for ln in all_lines if ln.line_type == "Surcharge"
@@ -148,8 +148,8 @@ def _sheet_run_summary(ws, run_id: str, payload: dict, all_lines) -> None:
     ok_n, warn_n, err_n = c.get("OK", 0), c.get("Warning", 0), c.get("Error", 0)
     overall = "Error" if err_n else ("Warning" if warn_n else "OK")
 
-    # Title banner row
-    ws.merge_cells("A1:C1")
+    # Title banner — 4 columns wide
+    ws.merge_cells("A1:D1")
     title = ws["A1"]
     title.value = "Freight Invoice Control — Run Summary"
     title.font = Font(bold=True, size=13, color=_WHITE)
@@ -157,73 +157,118 @@ def _sheet_run_summary(ws, run_id: str, payload: dict, all_lines) -> None:
     title.alignment = Alignment(horizontal="left", vertical="center", indent=1)
     title.border = _BORDER
     ws.row_dimensions[1].height = 26
-    for col in (2, 3):
+    for col in (2, 3, 4):
         ws.cell(row=1, column=col).fill = _HDR_FILL
         ws.cell(row=1, column=col).border = _BORDER
 
-    sections = [
-        ("Run Information", [
-            ("Run ID",    run_id),
-            ("Generated", datetime.now().strftime("%Y-%m-%d %H:%M")),
-        ]),
-        ("Volume", [
-            ("Files Scanned",     payload.get("total_files_scanned", 0)),
-            ("Invoices Detected", len(payload.get("invoices", []))),
-            ("Total Lines",       len(all_lines)),
-        ]),
-        ("Amounts (ex-VAT)", [
-            ("Total Amount ex-VAT (SEK)",     round(total_amount, 2)),
-            ("Total Surcharges ex-VAT (SEK)", round(surcharge_amount, 2)),
-            ("Surcharge Share",               surcharge_pct / 100),
-        ]),
-        ("Validation", [
-            ("Checks Passed", ok_n),
-            ("Warnings",      warn_n),
-            ("Errors",        err_n),
-            ("Overall Status", _STATUS_TEXT.get(overall, overall)),
-        ]),
-    ]
+    def _sec_header(row_num, title_text):
+        ws.merge_cells(f"A{row_num}:D{row_num}")
+        sh = ws.cell(row=row_num, column=1, value=title_text)
+        sh.font = Font(bold=True, size=9, color="FF1565C0")
+        _sec_fill = PatternFill("solid", fgColor="FFE3F0FF")
+        sh.fill = _sec_fill
+        sh.alignment = Alignment(indent=1)
+        for col in range(1, 5):
+            ws.cell(row=row_num, column=col).border = _BORDER
+            ws.cell(row=row_num, column=col).fill = _sec_fill
+
+    def _kv_row(row_num, key, val, fmt=None, status_key=None):
+        k = ws.cell(row=row_num, column=1, value=key)
+        k.font = _BOLD; k.fill = _WFILL; k.border = _BORDER
+        k.alignment = Alignment(indent=1)
+        v = ws.cell(row=row_num, column=2, value=val)
+        v.fill = _WFILL; v.border = _BORDER
+        for col in (3, 4):
+            ws.cell(row=row_num, column=col).fill = _WFILL
+            ws.cell(row=row_num, column=col).border = _BORDER
+        if fmt:
+            v.number_format = fmt
+            v.alignment = Alignment(horizontal="right")
+        if status_key:
+            v.fill = _STATUS_FILL.get(status_key, _WFILL)
+            v.font = _STATUS_FONT.get(status_key, _BOLD)
 
     row = 3
-    for sec_title, sec_rows in sections:
-        ws.merge_cells(f"A{row}:C{row}")
-        sh = ws.cell(row=row, column=1, value=sec_title)
-        sh.font = Font(bold=True, size=9, color="FF1565C0")
-        sh.fill = PatternFill("solid", fgColor="FFE3F0FF")
-        sh.alignment = Alignment(indent=1)
-        for col in range(1, 4):
-            ws.cell(row=row, column=col).border = _BORDER
-            ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor="FFE3F0FF")
+
+    # ── Run Information ───────────────────────────────────────────────────────
+    _sec_header(row, "Run Information"); row += 1
+    _kv_row(row, "Run ID", run_id); row += 1
+    _kv_row(row, "Generated", datetime.now().strftime("%Y-%m-%d %H:%M")); row += 1
+    row += 1  # spacer
+
+    # ── By Carrier ────────────────────────────────────────────────────────────
+    if headers:
+        _sec_header(row, "By Carrier"); row += 1
+
+        # Column headers for the carrier table
+        col_labels = ["Carrier", "Invoice #", "Amount ex-VAT (SEK)", "Status"]
+        for j, lbl in enumerate(col_labels, 1):
+            c = ws.cell(row=row, column=j, value=lbl)
+            c.font = Font(bold=True, size=9, color="FF424242")
+            c.fill = PatternFill("solid", fgColor="FFF5F7FB")
+            c.border = _BORDER
+            c.alignment = Alignment(indent=1)
         row += 1
 
-        for key, val in sec_rows:
-            k = ws.cell(row=row, column=1, value=key)
-            k.font = _BOLD
-            k.fill = _WFILL
-            k.border = _BORDER
-            k.alignment = Alignment(indent=1)
-            v = ws.cell(row=row, column=2, value=val)
-            v.fill = _WFILL
-            v.border = _BORDER
-            ws.cell(row=row, column=3).border = _BORDER
-            ws.cell(row=row, column=3).fill = _WFILL
+        carrier_total = 0.0
+        for h in headers:
+            status_raw = getattr(h, "reconciliation_status", "") or "NotChecked"
+            status_txt = _STATUS_TEXT.get(status_raw, status_raw)
+            amt = h.total_ex_vat or 0.0
+            carrier_total += amt
 
-            if key == "Overall Status":
-                v.fill = _STATUS_FILL.get(overall, _WFILL)
-                v.font = _STATUS_FONT.get(overall, _BOLD)
-            elif "Amount" in key or "Surcharge" in key:
-                if isinstance(val, (int, float)):
-                    v.number_format = "#,##0.00"
-                    v.alignment = Alignment(horizontal="right")
-            elif key == "Surcharge Share":
-                v.number_format = "0.0%"
-                v.alignment = Alignment(horizontal="right")
+            row_fill = _ROW_FILL.get(status_raw, _WFILL)
+            ca = ws.cell(row=row, column=1, value=h.carrier)
+            ca.fill = row_fill; ca.border = _BORDER; ca.alignment = Alignment(indent=1)
+            ca.font = _BOLD
+            cb = ws.cell(row=row, column=2, value=h.invoice_number)
+            cb.fill = row_fill; cb.border = _BORDER; cb.alignment = Alignment(indent=1)
+            cc = ws.cell(row=row, column=3, value=amt)
+            cc.fill = row_fill; cc.border = _BORDER
+            cc.number_format = "#,##0.00"; cc.alignment = Alignment(horizontal="right")
+            cd = ws.cell(row=row, column=4, value=status_txt)
+            cd.fill = _STATUS_FILL.get(status_raw, row_fill)
+            cd.font = _STATUS_FONT.get(status_raw, Font())
+            cd.border = _BORDER; cd.alignment = Alignment(indent=1)
             row += 1
-        row += 1  # blank spacer
 
-    ws.column_dimensions["A"].width = 34
-    ws.column_dimensions["B"].width = 22
-    ws.column_dimensions["C"].width = 8
+        # Carrier totals row
+        for j, val in enumerate(["TOTAL", "", round(carrier_total, 2), ""], 1):
+            c = ws.cell(row=row, column=j, value=val if val != "" else None)
+            c.font = Font(bold=True, color=_WHITE)
+            c.fill = _HDR_FILL; c.border = _BORDER
+            if j == 3:
+                c.number_format = "#,##0.00"
+                c.alignment = Alignment(horizontal="right")
+        row += 1
+        row += 1  # spacer
+
+    # ── Volume ────────────────────────────────────────────────────────────────
+    _sec_header(row, "Volume"); row += 1
+    _kv_row(row, "Files Scanned",     payload.get("total_files_scanned", 0)); row += 1
+    _kv_row(row, "Invoices Detected", len(payload.get("invoices", []))); row += 1
+    _kv_row(row, "Total Lines",       len(all_lines)); row += 1
+    row += 1
+
+    # ── Amounts ───────────────────────────────────────────────────────────────
+    _sec_header(row, "Amounts (ex-VAT)"); row += 1
+    _kv_row(row, "Total Amount ex-VAT (SEK)",     round(total_amount, 2),     "#,##0.00"); row += 1
+    _kv_row(row, "Total Surcharges ex-VAT (SEK)", round(surcharge_amount, 2), "#,##0.00"); row += 1
+    _kv_row(row, "Surcharge Share", surcharge_pct / 100, "0.0%"); row += 1
+    row += 1
+
+    # ── Validation ────────────────────────────────────────────────────────────
+    _sec_header(row, "Validation"); row += 1
+    _kv_row(row, "Checks Passed", ok_n); row += 1
+    _kv_row(row, "Warnings",      warn_n); row += 1
+    _kv_row(row, "Errors",        err_n); row += 1
+    _kv_row(row, "Overall Status", _STATUS_TEXT.get(overall, overall),
+            status_key=overall); row += 1
+
+    ws.column_dimensions["A"].width = 30
+    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["C"].width = 22
+    ws.column_dimensions["D"].width = 16
     ws.sheet_properties.tabColor = "1565C0"
 
 
@@ -476,7 +521,7 @@ def _write_excel(
 
     ws1 = wb.active
     ws1.title = "Summary"
-    _sheet_run_summary(ws1, run_id, payload, lines)
+    _sheet_run_summary(ws1, run_id, payload, lines, headers=headers)
 
     ws2 = wb.create_sheet("Invoices")
     _sheet_invoice_details(ws2, headers)
