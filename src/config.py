@@ -16,7 +16,7 @@ except ImportError:
 ROOT = Path(__file__).parent.parent
 
 # ── Folder paths ──────────────────────────────────────────────────────────────
-INBOX_DIR = ROOT / "01_Inbox"
+INBOX_DIR = ROOT / "00_Inbox"
 OUTPUT_DIR = ROOT / "02_Output"
 LOGS_DIR = ROOT / "03_Logs"
 CONFIG_DIR = ROOT / "04_Config"

@@ -66,7 +66,8 @@ def detect_bring_anomalies(
     max_pickup_cost = thresholds.get("max_pickup_cost", 300)
     max_parcel_weight = thresholds.get("max_parcel_weight_kg", 35)
     max_pallet_weight = thresholds.get("max_pallet_weight_kg", 1800)
-    cost_per_kg_multiplier = thresholds.get("max_cost_per_kg_multiplier", 2.5)
+    cost_per_kg_multiplier = thresholds.get("max_cost_per_kg_multiplier", 5.0)
+    min_cost_per_kg_absolute = thresholds.get("min_cost_per_kg_absolute", 150)
 
     svc_cost_limits = {
         "Parcel": max_parcel_cost,
@@ -96,8 +97,8 @@ def detect_bring_anomalies(
             severity="Warning",
             carrier=carrier,
             invoice_number=inv_num,
-            description="No Bring PDF invoice found in inbox for this specification.",
-            suggested_action="Verify PDF invoice was received and placed in 01_Inbox.",
+            description="Specification received — PDF invoice not yet found in inbox.",
+            suggested_action="Verify PDF invoice was received and placed in 00_Inbox.",
         ))
 
     if excel_header is None:
@@ -200,10 +201,10 @@ def detect_bring_anomalies(
             sum(ln.amount for ln in weighted_lines) /
             sum(ln.weight_kg for ln in weighted_lines)
         )
+
+        # Weight-limit check
         for ln in base_lines:
             ship_ref = f"Shipment {ln.shipment_number}" if ln.shipment_number else f"Line {ln.line_no}"
-
-            # Weight (fraktberäknad vikt) exceeds service type limit
             weight_limit = svc_weight_limits.get(ln.service_category)
             if weight_limit and ln.weight_kg and ln.weight_kg > weight_limit:
                 anomalies.append(Anomaly(
@@ -222,26 +223,33 @@ def detect_bring_anomalies(
                     suggested_action="Verify fraktberäknad vikt — may indicate volume weight exceeds physical weight limit for this service type.",
                 ))
 
-            # Cost per kg outlier (based on fraktberäknad vikt)
-            if (ln.weight_kg and ln.weight_kg > 0 and ln.amount and
-                    avg_cost_per_kg > 0):
+        # Cost-per-kg outliers — require BOTH a relative ratio AND an absolute floor
+        # to avoid noise from low-average invoices. Cap at 10 to prevent Claude token overflow.
+        _high_cpkg: list[tuple[float, BringInvoiceLine]] = []
+        for ln in base_lines:
+            if ln.weight_kg and ln.weight_kg > 0 and ln.amount and avg_cost_per_kg > 0:
                 cost_per_kg = ln.amount / ln.weight_kg
-                if cost_per_kg > avg_cost_per_kg * cost_per_kg_multiplier:
-                    anomalies.append(Anomaly(
-                        anomaly_type="HighCostPerKg",
-                        severity="Info",
-                        carrier=carrier,
-                        invoice_number=inv_num,
-                        description=(
-                            f"{ship_ref} cost/fraktberäknad vikt is {cost_per_kg:.2f} SEK/kg — "
-                            f"{cost_per_kg/avg_cost_per_kg:.1f}x invoice average ({avg_cost_per_kg:.2f} SEK/kg)."
-                        ),
-                        line_no=ln.line_no,
-                        value=round(cost_per_kg, 2),
-                        threshold=round(avg_cost_per_kg * cost_per_kg_multiplier, 2),
-                        detail=f"Shipment: {ln.shipment_number} | Service: {ln.service_name_raw} | Weight: {ln.weight_kg} kg",
-                        suggested_action="Check if fraktberäknad vikt is correct — volume weight may be inflating the chargeable weight.",
-                    ))
+                ratio = cost_per_kg / avg_cost_per_kg
+                if ratio > cost_per_kg_multiplier and cost_per_kg > min_cost_per_kg_absolute:
+                    _high_cpkg.append((ratio, ln))
+        for ratio, ln in sorted(_high_cpkg, key=lambda x: -x[0])[:10]:
+            ship_ref = f"Shipment {ln.shipment_number}" if ln.shipment_number else f"Line {ln.line_no}"
+            cost_per_kg = ln.amount / ln.weight_kg
+            anomalies.append(Anomaly(
+                anomaly_type="HighCostPerKg",
+                severity="Info",
+                carrier=carrier,
+                invoice_number=inv_num,
+                description=(
+                    f"{ship_ref} cost/fraktberäknad vikt is {cost_per_kg:.2f} SEK/kg — "
+                    f"{ratio:.1f}x invoice average ({avg_cost_per_kg:.2f} SEK/kg)."
+                ),
+                line_no=ln.line_no,
+                value=round(cost_per_kg, 2),
+                threshold=round(avg_cost_per_kg * cost_per_kg_multiplier, 2),
+                detail=f"Shipment: {ln.shipment_number} | Service: {ln.service_name_raw} | Weight: {ln.weight_kg} kg",
+                suggested_action="Check if fraktberäknad vikt is correct — volume weight may be inflating the chargeable weight.",
+            ))
 
     # ── Negative amounts ──────────────────────────────────────────────────────
     for ln in lines:
