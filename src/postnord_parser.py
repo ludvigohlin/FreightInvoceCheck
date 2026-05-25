@@ -552,10 +552,16 @@ def _parse_spec_pages(
 
             # Customer reference line — the first non-skippable, non-shipment line after
             # a shipment (before surcharges). May be pure digits OR alphanumeric (e.g. SR1134).
+            # Exception: if the line already looks like a surcharge (some shipments have no
+            # customer reference on the invoice), skip straight to surcharge handling.
             if current is not None and not in_surcharges:
-                current.customer_ref = line
-                in_surcharges = True
-                continue
+                if _SURCHARGE_RE.match(line):
+                    in_surcharges = True
+                    # fall through to surcharge block below
+                else:
+                    current.customer_ref = line
+                    in_surcharges = True
+                    continue
 
             # Surcharge line
             if current is not None and in_surcharges:

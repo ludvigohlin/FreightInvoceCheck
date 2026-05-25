@@ -380,8 +380,97 @@ def _sheet_surcharge_breakdown(ws, payload: dict) -> None:
 
 # ── Excel writer ──────────────────────────────────────────────────────────────
 
+def _sheet_anomalies(ws, anomalies: list) -> None:
+    """Anomalies sheet — one row per anomaly, colour-coded by severity."""
+    cols = ["Severity", "Type", "Carrier", "Invoice #", "Description", "Detail", "Suggested Action"]
+    _write_header_row(ws, 1, cols)
+    ws.freeze_panes = "A2"
+
+    sev_fill = {
+        "Error":   PatternFill("solid", fgColor="FFF8D7DA"),
+        "Warning": PatternFill("solid", fgColor="FFFFFDE7"),
+        "Info":    PatternFill("solid", fgColor="FFE3F2FD"),
+    }
+    sev_font = {
+        "Error":   Font(bold=True, color="FF842029"),
+        "Warning": Font(bold=True, color="FF856404"),
+        "Info":    Font(bold=True, color="FF1565C0"),
+    }
+    _sev_order = {"Error": 0, "Warning": 1, "Info": 2}
+    sorted_anom = sorted(anomalies, key=lambda a: _sev_order.get(a.severity, 9))
+
+    for i, a in enumerate(sorted_anom, start=2):
+        row_fill = sev_fill.get(a.severity, _WFILL)
+        vals = [a.severity, a.anomaly_type, a.carrier, a.invoice_number,
+                a.description, a.detail or "", a.suggested_action or ""]
+        for j, v in enumerate(vals, start=1):
+            c = ws.cell(row=i, column=j, value=v)
+            c.fill = row_fill
+            c.border = _BORDER
+            c.alignment = Alignment(wrap_text=(j in (5, 6, 7)), vertical="top")
+        ws.cell(row=i, column=1).font = sev_font.get(a.severity, _BOLD)
+
+    worst = _sev_order.get(sorted_anom[0].severity, 9) if sorted_anom else 9
+    ws.sheet_properties.tabColor = (
+        "C62828" if worst == 0 else "F9A825" if worst == 1 else "1565C0"
+    )
+    ws.column_dimensions["A"].width = 10
+    ws.column_dimensions["B"].width = 28
+    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["D"].width = 16
+    ws.column_dimensions["E"].width = 50
+    ws.column_dimensions["F"].width = 35
+    ws.column_dimensions["G"].width = 45
+    for col_cells in ws.iter_cols(min_row=2):
+        for c in col_cells:
+            c.alignment = Alignment(
+                wrap_text=(c.column in (5, 6, 7)), vertical="top"
+            )
+
+
+def _sheet_pending_files(ws, missing: list) -> None:
+    """Pending Files sheet — compact note per incomplete Bring invoice."""
+    _AMBER = PatternFill("solid", fgColor="FFF9A825")
+    _AMBER_LIGHT = PatternFill("solid", fgColor="FFFFFDE7")
+
+    ws.sheet_properties.tabColor = "F9A825"
+    ws.merge_cells("A1:D1")
+    title = ws["A1"]
+    title.value = "⚠ Pending Files — action may be required"
+    title.font = Font(bold=True, size=11, color=_WHITE)
+    title.fill = _AMBER
+    title.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    for col in range(1, 5):
+        ws.cell(row=1, column=col).fill = _AMBER
+        ws.cell(row=1, column=col).border = _BORDER
+    ws.row_dimensions[1].height = 22
+
+    cols = ["Invoice #", "Carrier", "Status", "Note"]
+    _write_header_row(ws, 2, cols)
+    ws.freeze_panes = "A3"
+
+    for i, m in enumerate(missing, start=3):
+        inv = m.get("invoice_number", "")
+        found = m.get("found_file", "")
+        missing_f = m.get("missing_file", "")
+        note = f"{found} received — {missing_f} not yet found in inbox"
+        vals = [inv, "Bring", "Incomplete", note]
+        for j, v in enumerate(vals, start=1):
+            c = ws.cell(row=i, column=j, value=v)
+            c.fill = _AMBER_LIGHT
+            c.border = _BORDER
+            c.alignment = Alignment(indent=1)
+        ws.cell(row=i, column=3).font = Font(bold=True, color="FF856404")
+
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 12
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 60
+
+
 def _write_excel(
-    path: Path, run_id: str, payload: dict, headers, lines, checks
+    path: Path, run_id: str, payload: dict, headers, lines, checks,
+    anomalies=None, missing_bring=None,
 ) -> None:
     wb = openpyxl.Workbook()
 
@@ -400,6 +489,14 @@ def _write_excel(
 
     ws5 = wb.create_sheet("Surcharge Breakdown")
     _sheet_surcharge_breakdown(ws5, payload)
+
+    if anomalies:
+        ws6 = wb.create_sheet("Anomalies")
+        _sheet_anomalies(ws6, anomalies)
+
+    if missing_bring:
+        ws_p = wb.create_sheet("Pending Files")
+        _sheet_pending_files(ws_p, missing_bring)
 
     wb.save(path)
 
@@ -857,13 +954,15 @@ def write_run_export(
     logger: ProcessingLogger,
     ai_summary: str | None = None,
     anomalies=None,
+    missing_bring: list | None = None,
 ) -> None:
     """Write XLSX into For_Email/ for Power Automate pickup. HTML saved to Summaries/ as archive."""
     config.FOR_EMAIL_DIR.mkdir(parents=True, exist_ok=True)
     xlsx_path = config.FOR_EMAIL_DIR / f"summary_{run_id}.xlsx"
     html_path = config.SUMMARIES_DIR / f"summary_{run_id}.html"
 
-    _write_excel(xlsx_path, run_id, payload, all_invoice_headers, all_invoice_lines, all_checks)
+    _write_excel(xlsx_path, run_id, payload, all_invoice_headers, all_invoice_lines, all_checks,
+                 anomalies=anomalies or [], missing_bring=missing_bring or [])
     _write_html(html_path, run_id, payload, all_invoice_headers, all_invoice_lines, all_checks,
                 ai_summary=ai_summary, anomalies=anomalies or [])
 

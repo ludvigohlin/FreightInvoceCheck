@@ -63,7 +63,7 @@ from src.claude_client import (
     generate_management_summary,
     explain_anomalies,
 )
-from src.run_exporter import write_run_export, write_missing_file_alert
+from src.run_exporter import write_run_export
 from src.dashboard_writer import write_html_dashboard
 
 
@@ -308,8 +308,6 @@ def main():
             logger.warning("Main",
                            f"Bring invoice {inv_num}: Excel specification received but PDF invoice is missing.")
 
-    if missing_bring:
-        write_missing_file_alert(run_id, missing_bring, logger)
 
     # ── Step 3d: AI classification of unresolved lines ────────────────────────
     if is_claude_enabled():
@@ -402,10 +400,11 @@ def main():
 
     # ── Step 8: Run export + HTML dashboard ──────────────────────────────────
     logger.info("Main", "Step 8: Generating run export and dashboard...")
-    if written_keys:
+    if written_keys or missing_bring:
         write_run_export(
             run_id, payload, all_invoice_headers, all_invoice_lines,
             all_checks, logger, ai_summary=ai_text, anomalies=all_anomalies,
+            missing_bring=missing_bring,
         )
     else:
         logger.info("Main", "Step 8: Skipping For_Email export — no new invoices.")
