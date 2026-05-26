@@ -16,5 +16,6 @@
   "flag_zero_amounts": true,
   "flag_unknown_service": true,
   "flag_unknown_surcharge": true,
-  "flag_missing_invoice_number": true
+  "flag_missing_invoice_number": true,
+  "flag_non_nordic_destinations": true
 }

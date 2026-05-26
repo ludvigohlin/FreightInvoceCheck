@@ -40,7 +40,7 @@ from src.bring_parser import parse_bring_pdf_header, parse_bring_excel_specifica
 from src.postnord_parser import parse_postnord_pdf
 from src.normalization import merge_bring_headers
 from src.validation import run_all_checks
-from src.anomaly_detection import detect_bring_anomalies
+from src.anomaly_detection import detect_bring_anomalies, detect_non_nordic_destinations
 from src.unknown_carrier_parser import parse_unknown_carrier_file
 from src.output_writer import (
     ensure_all_output_headers,
@@ -246,6 +246,16 @@ def main():
         xls_h = all_excel_headers.get(("Bring", inv_num))
         lines = all_lines.get(("Bring", inv_num), [])
 
+        # Skip incomplete invoices — both PDF invoice and Excel spec required.
+        # Incomplete pairs are tracked in missing_bring and sent as a pending-files alert.
+        if pdf_h is None or xls_h is None:
+            logger.info(
+                "Main",
+                f"Bring invoice {inv_num}: incomplete document set — "
+                f"skipping dashboard output (see Pending Files alert).",
+            )
+            continue
+
         try:
             merged = merge_bring_headers(pdf_h, xls_h)
             all_invoice_headers.append(merged)
@@ -258,11 +268,15 @@ def main():
         anomalies = detect_bring_anomalies(pdf_h, xls_h, lines, logger)
         all_anomalies.extend(anomalies)
 
-    # Collect PostNord headers and lines
+    # Collect PostNord headers and lines + geographic anomaly check
     for (carrier, inv_num), h in all_pdf_headers.items():
         if carrier == "PostNord":
             all_invoice_headers.append(h)
-            all_invoice_lines.extend(all_lines.get(("PostNord", inv_num), []))
+            pn_lines = all_lines.get(("PostNord", inv_num), [])
+            all_invoice_lines.extend(pn_lines)
+            all_anomalies.extend(
+                detect_non_nordic_destinations("PostNord", inv_num, pn_lines, logger)
+            )
 
     # ── Step 3c: Unknown carrier — AI extraction ─────────────────────────────
     if unknown_carrier_records:

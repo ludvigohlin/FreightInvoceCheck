@@ -303,8 +303,63 @@ def detect_bring_anomalies(
             suggested_action="Add surcharge classification rules or enable Claude API.",
         ))
 
+    # ── Non-Nordic destinations ───────────────────────────────────────────────
+    anomalies.extend(detect_non_nordic_destinations(carrier, inv_num, base_lines, logger))
+
     for a in anomalies:
         log_fn = logger.warning if a.severity in ("Warning", "Error") else logger.info
         log_fn("AnomalyDetection", f"[{a.anomaly_type}] {a.description}")
 
+    return anomalies
+
+
+_NORDIC_COUNTRIES = {"SE", "NO", "DK", "FI"}
+
+
+def detect_non_nordic_destinations(
+    carrier: str,
+    invoice_number: str,
+    lines: list,
+    logger: ProcessingLogger,
+) -> List[Anomaly]:
+    """
+    Flag base-freight lines destined for countries outside the Nordic region.
+    One anomaly per foreign country, listing shipment count and sample IDs.
+    """
+    from collections import defaultdict
+
+    thresholds = config.load_anomaly_thresholds()
+    if not thresholds.get("flag_non_nordic_destinations", True):
+        return []
+
+    foreign: dict[str, list] = defaultdict(list)
+    for ln in lines:
+        if getattr(ln, "line_type", None) != "BaseFreight":
+            continue
+        country = getattr(ln, "to_country", None) or "Unknown"
+        if country not in _NORDIC_COUNTRIES:
+            foreign[country].append(ln)
+
+    anomalies: List[Anomaly] = []
+    for country, lns in sorted(foreign.items()):
+        total_amt = sum(ln.amount or 0.0 for ln in lns)
+        sample_ids = [ln.shipment_number for ln in lns if ln.shipment_number][:5]
+        sample_str = ", ".join(sample_ids) + (" …" if len(lns) > 5 else "")
+        anomalies.append(Anomaly(
+            anomaly_type="NonNordicDestination",
+            severity="Warning",
+            carrier=carrier,
+            invoice_number=invoice_number,
+            description=(
+                f"{len(lns)} shipment(s) to non-Nordic destination "
+                f"'{country}' — total {total_amt:,.2f} SEK."
+            ),
+            detail=f"Country: {country} | Shipments: {sample_str}",
+            value=float(len(lns)),
+            threshold=None,
+            suggested_action=(
+                "Verify these shipments are intentional — international rates "
+                "may differ significantly from Nordic contract rates."
+            ),
+        ))
     return anomalies
