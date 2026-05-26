@@ -689,15 +689,15 @@ function renderMonthlyChart(invData) {{
         plugins: {{legend:{{position:'bottom'}},
           tooltip:{{callbacks:{{label:ctx=>' '+ctx.parsed.y.toLocaleString('sv-SE',{{minimumFractionDigits:2}})+' SEK'}}}}}},
         scales: {{
-          x:{{stacked:true, grid:{{display:false}}}},
-          y:{{stacked:true, beginAtZero:true, ticks:{{callback:v=>v.toLocaleString('sv-SE')}}, grid:{{color:'#f5f5f5'}}}},
+          x:{{grid:{{display:false}}}},
+          y:{{beginAtZero:true, ticks:{{callback:v=>v.toLocaleString('sv-SE')}}, grid:{{color:'#f5f5f5'}}}},
         }},
       }},
     }});
   }}
 }}
 
-// ── Timeline chart (stacked bar) ─────────────────────────────────────────────
+// ── Timeline chart (grouped bar) ─────────────────────────────────────────────
 function setGranularity(g) {{
   _tlGran = g;
   document.getElementById('btnMonthly').classList.toggle('active', g==='monthly');
@@ -733,8 +733,8 @@ function renderTimelineChart(invData) {{
         plugins:{{legend:{{position:'bottom'}},
           tooltip:{{callbacks:{{label:ctx=>' '+ctx.parsed.y.toLocaleString('sv-SE',{{minimumFractionDigits:2}})+' SEK'}}}}}},
         scales:{{
-          x:{{stacked:true, grid:{{display:false}}}},
-          y:{{stacked:true, beginAtZero:true, ticks:{{callback:v=>v.toLocaleString('sv-SE')}}, grid:{{color:'#f5f5f5'}}}},
+          x:{{grid:{{display:false}}}},
+          y:{{beginAtZero:true, ticks:{{callback:v=>v.toLocaleString('sv-SE')}}, grid:{{color:'#f5f5f5'}}}},
         }},
       }},
     }});
