@@ -41,11 +41,9 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     anomalies_raw = _read_csv(config.ANOMALIES_CSV)
     pending_raw = _read_csv(config.PENDING_INVOICES_CSV)
 
-    # Lookup: invoice_number → {invoice_date, carrier}
     inv_lookup = {inv["invoice_number"]: inv for inv in invoices}
 
-    # ── Build JS data: one object per invoice ─────────────────────────────────
-    # Fully reconciled invoices
+    # ── Invoice JS data ───────────────────────────────────────────────────────
     inv_js = []
     for inv in sorted(invoices, key=lambda x: x.get("invoice_date", ""), reverse=True):
         date = inv.get("invoice_date", "") or ""
@@ -65,30 +63,25 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
             "source_file": inv.get("source_file", ""),
         })
 
-    # Pending (incomplete document set) invoices — added with status="Pending"
     existing_inv_nos = {i["invoice_no"] for i in inv_js}
     for p in pending_raw:
         inv_no = p.get("invoice_number", "")
         if inv_no in existing_inv_nos:
-            continue  # graduated to fully processed — skip pending record
+            continue
         inv_js.append({
-            "date": "",
-            "year": "",
-            "month": "",
+            "date": "", "year": "", "month": "",
             "carrier": p.get("carrier", "Bring"),
             "invoice_no": inv_no,
             "total": _safe_float(p.get("known_total_ex_vat")),
             "currency": "SEK",
             "status": "Pending",
-            "customer_number": "",
-            "due_date": "",
-            "vat_amount": 0.0,
-            "total_inc_vat": 0.0,
+            "customer_number": "", "due_date": "",
+            "vat_amount": 0.0, "total_inc_vat": 0.0,
             "source_file": p.get("source_file", ""),
             "pending_note": p.get("note", ""),
         })
 
-    # ── Build JS data: aggregated service breakdown per (invoice, service_cat) ─
+    # ── Service aggregates ────────────────────────────────────────────────────
     svc_agg: dict = defaultdict(lambda: {"count": 0, "total": 0.0, "carrier": "", "date": "", "year": "", "month": ""})
     for line in lines:
         if line.get("line_type") == "BaseFreight":
@@ -105,20 +98,13 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
             svc_agg[key]["month"] = date[:7] if len(date) >= 7 else ""
 
     svc_js = [
-        {
-            "invoice_no": k[0],
-            "service_cat": k[1],
-            "carrier": v["carrier"],
-            "date": v["date"],
-            "year": v["year"],
-            "month": v["month"],
-            "count": v["count"],
-            "total": round(v["total"], 2),
-        }
+        {"invoice_no": k[0], "service_cat": k[1], "carrier": v["carrier"],
+         "date": v["date"], "year": v["year"], "month": v["month"],
+         "count": v["count"], "total": round(v["total"], 2)}
         for k, v in svc_agg.items()
     ]
 
-    # ── Build surcharge data: aggregated per (invoice, surcharge_cat) ─────────
+    # ── Surcharge aggregates ──────────────────────────────────────────────────
     sc_agg: dict = defaultdict(lambda: {"total": 0.0, "carrier": "", "year": "", "month": ""})
     for line in surcharges:
         inv_no = line.get("invoice_number", "")
@@ -137,7 +123,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
         for k, v in sc_agg.items()
     ]
 
-    # ── Build service cost breakdown: base + surcharges per service type ─────
+    # ── Service cost breakdown ────────────────────────────────────────────────
     base_agg: dict = defaultdict(lambda: {"count": 0, "total": 0.0, "carrier": "", "year": "", "month": ""})
     for line in lines:
         if line.get("line_type") == "BaseFreight":
@@ -169,36 +155,26 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
         }
         sc_grand = sum(sc_by_cat.values())
         svc_cost_js.append({
-            "invoice_no": inv_no,
-            "service_cat": svc_cat,
-            "carrier": v["carrier"],
-            "year": v["year"],
-            "month": v["month"],
-            "count": v["count"],
+            "invoice_no": inv_no, "service_cat": svc_cat, "carrier": v["carrier"],
+            "year": v["year"], "month": v["month"], "count": v["count"],
             "base_total": round(v["total"], 2),
             "sc_by_cat": {k: val for k, val in sc_by_cat.items() if val > 0},
             "sc_grand": round(sc_grand, 2),
             "grand_total": round(v["total"] + sc_grand, 2),
         })
 
-    # ── Build anomaly JS data ─────────────────────────────────────────────────
+    # ── Anomaly JS data ───────────────────────────────────────────────────────
     anomaly_js = [
-        {
-            "carrier": a.get("carrier", ""),
-            "invoice_no": a.get("invoice_number", ""),
-            "type": a.get("anomaly_type", ""),
-            "severity": a.get("severity", ""),
-            "description": a.get("description", ""),
-            "detail": a.get("detail", ""),
-            "value": _safe_float(a.get("value")),
-            "threshold": _safe_float(a.get("threshold")),
-            "suggested_action": a.get("suggested_action", ""),
-            "explanation": a.get("claude_explanation", ""),
-        }
+        {"carrier": a.get("carrier", ""), "invoice_no": a.get("invoice_number", ""),
+         "type": a.get("anomaly_type", ""), "severity": a.get("severity", ""),
+         "description": a.get("description", ""), "detail": a.get("detail", ""),
+         "value": _safe_float(a.get("value")), "threshold": _safe_float(a.get("threshold")),
+         "suggested_action": a.get("suggested_action", ""),
+         "explanation": a.get("claude_explanation", "")}
         for a in reversed(anomalies_raw[-200:] if len(anomalies_raw) > 200 else anomalies_raw)
     ]
 
-    # ── Recent checks (last 60, newest first) ─────────────────────────────────
+    # ── Recent checks ─────────────────────────────────────────────────────────
     check_js = [
         {"carrier": c.get("carrier", ""), "invoice_no": c.get("invoice_number", ""),
          "check": c.get("check_name", ""), "status": c.get("status", ""),
@@ -206,7 +182,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
         for c in reversed(checks[-60:] if len(checks) > 60 else checks)
     ]
 
-    # ── Filter option lists ───────────────────────────────────────────────────
+    # ── Filter options ────────────────────────────────────────────────────────
     years = sorted({i["year"] for i in inv_js if i["year"]}, reverse=True)
     carriers = sorted({i["carrier"] for i in inv_js if i["carrier"]})
     service_cats = sorted({s["service_cat"] for s in svc_js if s["service_cat"]})
@@ -219,14 +195,13 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
 
     last_updated = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # Embed data as JSON
-    inv_json = json.dumps(inv_js)
-    svc_json = json.dumps(svc_js)
-    sc_json = json.dumps(sc_js)
-    check_json = json.dumps(check_js)
-    svc_cost_json = json.dumps(svc_cost_js)
-    anomaly_json = json.dumps(anomaly_js)
-    sc_cats_json = json.dumps(all_sc_cats)
+    inv_json       = json.dumps(inv_js)
+    svc_json       = json.dumps(svc_js)
+    sc_json        = json.dumps(sc_js)
+    check_json     = json.dumps(check_js)
+    svc_cost_json  = json.dumps(svc_cost_js)
+    anomaly_json   = json.dumps(anomaly_js)
+    sc_cats_json   = json.dumps(all_sc_cats)
 
     html_content = f"""<!DOCTYPE html>
 <html lang="sv">
@@ -240,152 +215,186 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
           font-size:14px;background:#f0f2f5;color:#333}}
     header{{background:#1565c0;color:#fff;padding:14px 24px;
-            display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}}
-    header h1{{font-size:18px;font-weight:600}}
-    header .meta{{font-size:12px;opacity:.8}}
-    .filter-bar{{background:#fff;border-bottom:1px solid #ddd;padding:10px 24px;
-                 display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+            display:flex;align-items:center;justify-content:space-between;
+            position:sticky;top:0;z-index:100;box-shadow:0 2px 6px rgba(0,0,0,.2)}}
+    header h1{{font-size:18px;font-weight:600;letter-spacing:-.2px}}
+    header .meta{{font-size:12px;opacity:.75}}
+    .filter-bar{{background:#fff;border-bottom:1px solid #ddd;padding:9px 24px;
+                 display:flex;flex-wrap:wrap;gap:8px;align-items:center;
                  position:sticky;top:49px;z-index:99;box-shadow:0 1px 4px rgba(0,0,0,.06)}}
-    .filter-bar label{{font-size:12px;color:#555;font-weight:600}}
+    .filter-bar label{{font-size:11px;color:#666;font-weight:700;text-transform:uppercase;letter-spacing:.4px}}
     .filter-bar select,.filter-bar input{{
       padding:5px 8px;border:1px solid #ccc;border-radius:4px;
-      font-size:13px;background:#fff;min-width:120px}}
-    .filter-bar input{{min-width:160px}}
-    .filter-bar button{{padding:5px 14px;background:#1565c0;color:#fff;
+      font-size:13px;background:#fff;min-width:110px}}
+    .filter-bar input{{min-width:150px}}
+    .filter-bar button{{padding:5px 13px;background:#1565c0;color:#fff;
                         border:none;border-radius:4px;cursor:pointer;font-size:13px}}
     .filter-bar button:hover{{background:#0d47a1}}
-    .filter-bar .reset{{background:#757575}}
-    .filter-bar .reset:hover{{background:#424242}}
-    .filter-sep{{width:1px;height:24px;background:#ddd;margin:0 4px}}
-    main{{max-width:1300px;margin:0 auto;padding:20px 16px}}
-    .kpi-row{{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}}
+    .filter-bar .reset{{background:#9e9e9e}}
+    .filter-bar .reset:hover{{background:#757575}}
+    .filter-sep{{width:1px;height:22px;background:#e0e0e0;margin:0 2px}}
+    main{{max-width:1340px;margin:0 auto;padding:18px 16px}}
+
+    /* KPI row */
+    .kpi-row{{display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap}}
     .kpi{{background:#fff;border-radius:8px;padding:14px 18px;
-           box-shadow:0 1px 3px rgba(0,0,0,.1);flex:1;min-width:160px}}
-    .kpi .value{{font-size:26px;font-weight:700;color:#1565c0}}
-    .kpi .label{{font-size:11px;color:#666;margin-top:3px;text-transform:uppercase;letter-spacing:.5px}}
-    .kpi .sub{{font-size:12px;color:#999;margin-top:2px}}
-    .kpi.pending-kpi .value{{color:#e65100}}
-    .charts-row{{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:20px}}
-    .card{{background:#fff;border-radius:8px;padding:18px;
-           box-shadow:0 1px 3px rgba(0,0,0,.1);margin-bottom:20px}}
-    .card h2{{font-size:14px;color:#1565c0;margin-bottom:14px;
-              border-bottom:1px solid #e0e0e0;padding-bottom:8px;
-              display:flex;align-items:center;justify-content:space-between}}
-    .card h2 .count{{font-size:12px;color:#999;font-weight:400}}
+           box-shadow:0 1px 3px rgba(0,0,0,.09);flex:1;min-width:150px;
+           border-top:3px solid transparent}}
+    .kpi.blue{{border-top-color:#1565c0}}
+    .kpi.green{{border-top-color:#2e7d32}}
+    .kpi.orange{{border-top-color:#e65100}}
+    .kpi.red{{border-top-color:#c62828}}
+    .kpi.yellow{{border-top-color:#f57f17}}
+    .kpi.grey{{border-top-color:#9e9e9e}}
+    .kpi .value{{font-size:24px;font-weight:700;color:#1a1a1a;line-height:1.1}}
+    .kpi .label{{font-size:11px;color:#777;margin-top:4px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}}
+    .kpi .sub{{font-size:12px;color:#aaa;margin-top:3px}}
+
+    /* Card */
+    .card{{background:#fff;border-radius:8px;padding:16px 18px;
+           box-shadow:0 1px 3px rgba(0,0,0,.09);margin-bottom:16px}}
+    .card h2{{font-size:13px;font-weight:700;color:#1565c0;margin-bottom:12px;
+              border-bottom:1px solid #eee;padding-bottom:8px;
+              display:flex;align-items:center;justify-content:space-between;
+              text-transform:uppercase;letter-spacing:.4px}}
+    .card h2 .count{{font-size:12px;color:#bbb;font-weight:400;text-transform:none;letter-spacing:0}}
+
+    /* Grid layouts */
+    .grid-2-1{{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:16px}}
+    .grid-3-2{{display:grid;grid-template-columns:3fr 2fr;gap:16px;margin-bottom:16px}}
+
+    /* Tables */
     table{{width:100%;border-collapse:collapse;font-size:13px}}
     th{{background:#1565c0;color:#fff;text-align:left;padding:7px 10px;
-        font-weight:600;white-space:nowrap;position:sticky;top:0;z-index:1}}
-    th.sort{{cursor:pointer;user-select:none}}
-    th.sort:hover{{background:#0d47a1}}
-    td{{padding:6px 10px;border-bottom:1px solid #eee}}
+        font-weight:600;white-space:nowrap}}
+    td{{padding:6px 10px;border-bottom:1px solid #f0f0f0}}
+    tr:last-child td{{border-bottom:none}}
     tr:hover td{{background:#f5f9ff}}
     td.num{{text-align:right;font-variant-numeric:tabular-nums}}
-    .table-wrap{{max-height:420px;overflow-y:auto;border-radius:6px;
-                 border:1px solid #e0e0e0}}
-    .badge{{padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;display:inline-block}}
+    .table-wrap{{overflow-y:auto;border-radius:6px;border:1px solid #e8e8e8}}
+    .table-wrap.fixed-h{{max-height:380px}}
+
+    /* Badges */
+    .badge{{padding:2px 8px;border-radius:4px;font-weight:700;font-size:11px;
+            display:inline-block;letter-spacing:.2px}}
     .badge-ok{{background:#e8f5e9;color:#2e7d32}}
     .badge-warn{{background:#fff8e1;color:#f57f17}}
     .badge-err{{background:#ffebee;color:#c62828}}
     .badge-pending{{background:#fff3e0;color:#e65100}}
-    .badge-nc{{background:#f5f5f5;color:#757575}}
-    .no-data{{color:#999;font-style:italic;padding:20px;text-align:center}}
-    .toggle-grp{{display:flex;gap:4px}}
+    .badge-nc{{background:#f5f5f5;color:#9e9e9e}}
+
+    .no-data{{color:#bbb;font-style:italic;padding:18px;text-align:center;font-size:13px}}
+
+    /* Toggle buttons */
+    .toggle-grp{{display:flex;gap:3px}}
     .toggle-btn{{padding:3px 10px;border:1px solid #1565c0;border-radius:4px;
                  cursor:pointer;font-size:12px;background:#fff;color:#1565c0;font-weight:600}}
     .toggle-btn.active{{background:#1565c0;color:#fff}}
     .toggle-btn:hover:not(.active){{background:#e3f2fd}}
-    .inv-row{{cursor:pointer}}
-    .inv-row:hover td{{background:#e3f2fd !important}}
+
+    /* Invoice row clickable */
+    .inv-row{{cursor:pointer;transition:background .12s}}
+    .inv-row:hover td{{background:#e8f4fd !important}}
+
+    /* Recent invoices card */
+    #recentInvBody tr.pending-row td{{opacity:.75}}
+    .show-more-btn{{display:block;width:100%;padding:8px;border:none;
+                    background:#f5f9ff;color:#1565c0;font-size:12px;font-weight:700;
+                    cursor:pointer;border-top:1px solid #e0e0e0;border-radius:0 0 6px 6px;
+                    text-align:center;letter-spacing:.3px}}
+    .show-more-btn:hover{{background:#e3f2fd}}
+
     /* Modal */
     .modal-overlay{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
-                    z-index:1000;overflow-y:auto;padding:40px 16px}}
+                    z-index:1000;overflow-y:auto;padding:32px 16px}}
     .modal-overlay.open{{display:flex;align-items:flex-start;justify-content:center}}
-    .modal{{background:#fff;border-radius:10px;width:100%;max-width:900px;
+    .modal{{background:#fff;border-radius:10px;width:100%;max-width:920px;
             box-shadow:0 8px 32px rgba(0,0,0,.25);overflow:hidden}}
-    .modal-header{{background:#1565c0;color:#fff;padding:16px 20px;
+    .modal-header{{background:#1565c0;color:#fff;padding:14px 20px;
                    display:flex;align-items:center;justify-content:space-between}}
-    .modal-header h3{{font-size:16px;font-weight:600}}
+    .modal-header h3{{font-size:15px;font-weight:700}}
     .modal-close{{background:none;border:none;color:#fff;font-size:22px;
                   cursor:pointer;line-height:1;padding:0 4px}}
     .modal-close:hover{{opacity:.7}}
-    .modal-body{{padding:20px;overflow-y:auto;max-height:75vh}}
-    .modal-section{{margin-bottom:20px}}
-    .modal-section h4{{font-size:13px;font-weight:700;color:#1565c0;
-                       border-bottom:1px solid #e0e0e0;padding-bottom:6px;margin-bottom:10px}}
-    .info-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px 16px}}
-    .info-item .label{{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px}}
-    .info-item .value{{font-size:13px;font-weight:600;color:#333}}
-    @media(max-width:800px){{
-      .charts-row{{grid-template-columns:1fr}}
-      .kpi{{min-width:140px}}
-      .filter-bar{{top:49px}}
+    .modal-body{{padding:20px;overflow-y:auto;max-height:76vh}}
+    .modal-section{{margin-bottom:18px}}
+    .modal-section h4{{font-size:11px;font-weight:700;color:#1565c0;
+                       border-bottom:1px solid #eee;padding-bottom:5px;margin-bottom:10px;
+                       text-transform:uppercase;letter-spacing:.5px}}
+    .info-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px 16px}}
+    .info-item .ilabel{{font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.4px}}
+    .info-item .ivalue{{font-size:13px;font-weight:600;color:#222;margin-top:1px}}
+
+    @media(max-width:900px){{
+      .grid-2-1,.grid-3-2{{grid-template-columns:1fr}}
+      .kpi{{min-width:130px}}
     }}
   </style>
 </head>
 <body>
 <header>
-  <h1>Freight Invoice Control — Dashboard</h1>
-  <div class="meta">Isicom AB &nbsp;|&nbsp; Updated {_e(last_updated)}</div>
+  <h1>Freight Invoice Control</h1>
+  <div class="meta">Isicom AB &nbsp;·&nbsp; Uppdaterad {_e(last_updated)}</div>
 </header>
 
 <div class="filter-bar">
   <label>År</label>
   <select id="fYear" onchange="applyFilters()">
-    <option value="">Alla år</option>{year_opts}
+    <option value="">Alla</option>{year_opts}
   </select>
   <label>Månad</label>
   <select id="fMonth" onchange="applyFilters()">
-    <option value="">Alla månader</option>{month_opts}
+    <option value="">Alla</option>{month_opts}
   </select>
   <label>Transportör</label>
   <select id="fCarrier" onchange="applyFilters()">
     <option value="">Alla</option>{carrier_opts}
   </select>
-  <label>Tjänstetyp</label>
+  <label>Tjänst</label>
   <select id="fService" onchange="applyFilters()">
-    <option value="">Alla typer</option>{svc_opts}
+    <option value="">Alla</option>{svc_opts}
   </select>
   <input id="fInvoice" type="text" placeholder="Sök fakturanr..." oninput="applyFilters()">
   <div class="filter-sep"></div>
-  <label>Visa</label>
   <div class="toggle-grp">
-    <button class="toggle-btn active" id="btnAll" onclick="setRecFilter('all')">Alla</button>
+    <button class="toggle-btn active" id="btnAll" onclick="setRecFilter('all')">Alla fakturor</button>
     <button class="toggle-btn" id="btnRecOnly" onclick="setRecFilter('reconciled')">Fullt avstämda</button>
   </div>
   <button class="reset" onclick="resetFilters()">Återställ</button>
 </div>
 
 <main>
-  <!-- Average cost per service type — pinned to top -->
-  <div class="card">
-    <h2>Genomsnittskostnad per tjänstetyp (inkl. tillägg) <span class="count" id="svcCostCount"></span></h2>
-    <div class="table-wrap">
-      <table id="svcCostTable">
-        <thead id="svcCostHead"></thead>
-        <tbody id="svcCostBody"></tbody>
-      </table>
-    </div>
-  </div>
 
   <!-- KPI row -->
   <div class="kpi-row" id="kpiRow"></div>
 
-  <!-- Charts -->
-  <div class="charts-row">
+  <!-- Charts + Recent invoices -->
+  <div class="grid-2-1">
     <div class="card">
-      <h2>Månadskostnad per transportör ex-moms (SEK) <span class="count" id="chartNote"></span></h2>
-      <canvas id="monthlyChart" height="200"></canvas>
+      <h2>Månadskostnad per transportör ex-moms (SEK)
+        <span class="count" id="chartNote"></span>
+      </h2>
+      <canvas id="monthlyChart" height="195"></canvas>
     </div>
-    <div class="card">
-      <h2>Fördelning per transportör</h2>
-      <canvas id="carrierChart" height="200"></canvas>
+    <div class="card" style="display:flex;flex-direction:column">
+      <h2>Senaste fakturor <span class="count" id="recentInvCount"></span></h2>
+      <div style="flex:1;overflow:hidden;border-radius:6px;border:1px solid #e8e8e8">
+        <table id="recentInvTable" style="font-size:12px">
+          <thead><tr>
+            <th>Datum</th><th>Transp.</th><th>Faktura #</th>
+            <th class="num">Belopp</th><th>Status</th>
+          </tr></thead>
+          <tbody id="recentInvBody"></tbody>
+        </table>
+        <button class="show-more-btn" id="showMoreBtn" onclick="toggleAllInvoices()"></button>
+      </div>
     </div>
   </div>
 
   <!-- Cost timeline -->
   <div class="card">
     <h2>Kostnadsutveckling ex-moms (SEK)
-      <span style="display:flex;align-items:center;gap:12px">
+      <span style="display:flex;align-items:center;gap:10px">
         <span class="count" id="timelineNote"></span>
         <span class="toggle-grp">
           <button class="toggle-btn active" id="btnMonthly" onclick="setGranularity('monthly')">Månadsvis</button>
@@ -393,36 +402,47 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
         </span>
       </span>
     </h2>
-    <canvas id="timelineChart" height="100"></canvas>
+    <canvas id="timelineChart" height="90"></canvas>
   </div>
 
-  <!-- Service breakdown -->
+  <!-- Avg cost per service -->
   <div class="card">
-    <h2>Försändelser per tjänstetyp <span class="count" id="svcCount"></span></h2>
-    <div class="table-wrap">
-      <table id="svcTable">
-        <thead><tr>
-          <th>Tjänstetyp</th><th>Transportör</th>
-          <th class="num">Försändelser</th>
-          <th class="num">Total ex-moms (SEK)</th>
-          <th class="num">Snitt / Försändelse (SEK)</th>
-          <th class="num">% av total</th>
-        </tr></thead>
-        <tbody id="svcBody"></tbody>
+    <h2>Genomsnittskostnad per tjänstetyp (inkl. tillägg) <span class="count" id="svcCostCount"></span></h2>
+    <div class="table-wrap fixed-h">
+      <table id="svcCostTable">
+        <thead id="svcCostHead"></thead>
+        <tbody id="svcCostBody"></tbody>
       </table>
     </div>
   </div>
 
-  <!-- Surcharge breakdown -->
-  <div class="card">
-    <h2>Tilläggsavgifter <span class="count" id="scCount"></span></h2>
-    <canvas id="surchargeChart" height="90"></canvas>
+  <!-- Service breakdown + Surcharges -->
+  <div class="grid-3-2">
+    <div class="card">
+      <h2>Försändelser per tjänstetyp <span class="count" id="svcCount"></span></h2>
+      <div class="table-wrap fixed-h">
+        <table id="svcTable">
+          <thead><tr>
+            <th>Tjänstetyp</th><th>Transportör</th>
+            <th class="num">Antal</th>
+            <th class="num">Total (SEK)</th>
+            <th class="num">Snitt (SEK)</th>
+            <th class="num">Andel</th>
+          </tr></thead>
+          <tbody id="svcBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Tilläggsavgifter <span class="count" id="scCount"></span></h2>
+      <canvas id="surchargeChart" height="220"></canvas>
+    </div>
   </div>
 
   <!-- Anomalies -->
   <div class="card">
     <h2>Avvikelser <span class="count" id="anomalyCount"></span></h2>
-    <div class="table-wrap">
+    <div class="table-wrap fixed-h">
       <table id="anomalyTable">
         <thead><tr>
           <th>Transportör</th><th>Faktura#</th><th>Typ</th><th>Allvarlighet</th>
@@ -433,24 +453,10 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     </div>
   </div>
 
-  <!-- Invoice history -->
-  <div class="card">
-    <h2>Fakturahistorik <span class="count" id="invCount"></span></h2>
-    <div class="table-wrap">
-      <table id="invTable">
-        <thead><tr>
-          <th>Fakturadatum</th><th>Transportör</th><th>Faktura #</th>
-          <th class="num">Totalt ex-moms (SEK)</th><th>Valuta</th><th>Status</th>
-        </tr></thead>
-        <tbody id="invBody"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Recent checks -->
+  <!-- Validation checks -->
   <div class="card">
     <h2>Kontroller</h2>
-    <div class="table-wrap">
+    <div class="table-wrap fixed-h">
       <table id="checkTable">
         <thead><tr>
           <th>Transportör</th><th>Faktura#</th><th>Kontroll</th>
@@ -460,6 +466,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
       </table>
     </div>
   </div>
+
 </main>
 
 <!-- Invoice detail modal -->
@@ -482,43 +489,38 @@ const SVC_COST_DATA = {svc_cost_json};
 const ANOMALY_DATA  = {anomaly_json};
 const ALL_SC_CATS   = {sc_cats_json};
 
-const CARRIER_COLORS = {{Bring:'#1565c0', PostNord:'#e65100'}};
-const CARRIER_COLORS_ALPHA = {{Bring:'rgba(21,101,192,0.7)', PostNord:'rgba(230,81,0,0.7)'}};
-
-function carrierColor(c) {{ return CARRIER_COLORS[c] || '#546e7a'; }}
-function carrierColorA(c) {{ return CARRIER_COLORS_ALPHA[c] || 'rgba(84,110,122,0.7)'; }}
+const CC  = {{Bring:'#1565c0', PostNord:'#e65100'}};
+const CCA = {{Bring:'rgba(21,101,192,.72)', PostNord:'rgba(230,81,0,.72)'}};
+function cCol(c)  {{ return CC[c]  || '#546e7a'; }}
+function cColA(c) {{ return CCA[c] || 'rgba(84,110,122,.72)'; }}
 
 function badge(status) {{
-  const map = {{
-    OK:         ['badge-ok',      '✓'],
-    Warning:    ['badge-warn',    '⚠'],
-    Error:      ['badge-err',     '✗'],
-    Pending:    ['badge-pending', '⏳'],
-  }};
-  const [cls, icon] = map[status] || ['badge-nc', '?'];
+  const map = {{OK:['badge-ok','✓'], Warning:['badge-warn','⚠'],
+                Error:['badge-err','✗'], Pending:['badge-pending','⏳']}};
+  const [cls,icon] = map[status] || ['badge-nc','—'];
   return `<span class="badge ${{cls}}">${{icon}} ${{esc(status)}}</span>`;
 }}
-
 function esc(s) {{
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }}
-
-function fmt(n) {{ return n.toLocaleString('sv-SE', {{minimumFractionDigits:2, maximumFractionDigits:2}}); }}
+function fmt(n)    {{ return (+n).toLocaleString('sv-SE',{{minimumFractionDigits:2,maximumFractionDigits:2}}); }}
 function fmtInt(n) {{ return Math.round(n).toLocaleString('sv-SE'); }}
 
-let monthlyChart, carrierChart, surchargeChart, timelineChart;
-let _tlGran = 'monthly';
+let monthlyChart, surchargeChart, timelineChart;
+let _tlGran   = 'monthly';
 let _recFilter = 'all';
+let _showAllInv = false;
+const RECENT_LIMIT = 5;
 
 // ── Reconciliation filter ─────────────────────────────────────────────────────
 function setRecFilter(f) {{
   _recFilter = f;
-  document.getElementById('btnAll').classList.toggle('active', f === 'all');
-  document.getElementById('btnRecOnly').classList.toggle('active', f === 'reconciled');
+  document.getElementById('btnAll').classList.toggle('active', f==='all');
+  document.getElementById('btnRecOnly').classList.toggle('active', f==='reconciled');
   applyFilters();
 }}
 
-// ── Filters ──────────────────────────────────────────────────────────────────
+// ── Main filter ───────────────────────────────────────────────────────────────
 function applyFilters() {{
   const year    = document.getElementById('fYear').value;
   const month   = document.getElementById('fMonth').value;
@@ -527,179 +529,194 @@ function applyFilters() {{
   const invQ    = document.getElementById('fInvoice').value.toLowerCase().trim();
 
   const filtInv = INV_DATA.filter(i =>
-    (!year    || i.year    === year)    &&
-    (!month   || i.month   === month)   &&
-    (!carrier || i.carrier === carrier) &&
+    (!year    || i.year    === year)   &&
+    (!month   || i.month   === month)  &&
+    (!carrier || i.carrier === carrier)&&
     (!invQ    || i.invoice_no.toLowerCase().includes(invQ)) &&
     (_recFilter !== 'reconciled' || i.status !== 'Pending')
   );
-  const filtInvNos = new Set(filtInv.map(i => i.invoice_no));
+  const filtNos = new Set(filtInv.map(i => i.invoice_no));
 
-  const filtSvc = SVC_DATA.filter(s =>
-    filtInvNos.has(s.invoice_no) && (!svc || s.service_cat === svc)
-  );
-  const filtSc = SC_DATA.filter(s => filtInvNos.has(s.invoice_no));
-  const filtSvcCost = SVC_COST_DATA.filter(s =>
-    filtInvNos.has(s.invoice_no) && (!svc || s.service_cat === svc)
-  );
-  const filtAnomalies = ANOMALY_DATA.filter(a => filtInvNos.has(a.invoice_no));
+  const filtSvc     = SVC_DATA.filter(s => filtNos.has(s.invoice_no) && (!svc||s.service_cat===svc));
+  const filtSc      = SC_DATA.filter(s => filtNos.has(s.invoice_no));
+  const filtSvcCost = SVC_COST_DATA.filter(s => filtNos.has(s.invoice_no) && (!svc||s.service_cat===svc));
+  const filtAnom    = ANOMALY_DATA.filter(a => filtNos.has(a.invoice_no));
 
-  renderKPIs(filtInv, filtSvc);
-  renderInvoiceTable(filtInv);
-  renderTimelineChart(filtInv);
-  renderServiceTable(filtSvc);
-  renderServiceCostTable(filtSvcCost);
-  renderAnomalyTable(filtAnomalies);
-  renderSurchargeChart(filtSc);
+  renderKPIs(filtInv, filtSvc, filtAnom);
+  renderRecentInvoices(filtInv);
   renderMonthlyChart(filtInv);
-  renderCarrierChart(filtInv);
+  renderTimelineChart(filtInv);
+  renderServiceCostTable(filtSvcCost);
+  renderServiceTable(filtSvc);
+  renderSurchargeChart(filtSc);
+  renderAnomalyTable(filtAnom);
 }}
 
 function resetFilters() {{
-  ['fYear','fMonth','fCarrier','fService'].forEach(id => document.getElementById(id).value = '');
-  document.getElementById('fInvoice').value = '';
-  _recFilter = 'all';
+  ['fYear','fMonth','fCarrier','fService'].forEach(id => document.getElementById(id).value='');
+  document.getElementById('fInvoice').value='';
+  _recFilter='all'; _showAllInv=false;
   document.getElementById('btnAll').classList.add('active');
   document.getElementById('btnRecOnly').classList.remove('active');
   applyFilters();
 }}
 
-// ── KPIs ─────────────────────────────────────────────────────────────────────
-function renderKPIs(invData, svcData) {{
+// ── KPIs ──────────────────────────────────────────────────────────────────────
+function renderKPIs(invData, svcData, anomData) {{
   const reconInv  = invData.filter(i => i.status !== 'Pending');
   const pendInv   = invData.filter(i => i.status === 'Pending');
-  const totalCost = reconInv.reduce((s, i) => s + i.total, 0);
-  const pendCost  = pendInv.reduce((s, i) => s + i.total, 0);
-  const totalShipments = svcData.reduce((s, v) => s + v.count, 0);
-  const totalSurcharge = SC_DATA
-    .filter(s => new Set(reconInv.map(i => i.invoice_no)).has(s.invoice_no))
-    .reduce((s, v) => s + v.total, 0);
-  const scPct = totalCost > 0 ? (totalSurcharge / totalCost * 100) : 0;
+  const totalCost = reconInv.reduce((s,i) => s+i.total, 0);
+  const pendCost  = pendInv.reduce((s,i)  => s+i.total, 0);
+  const totalShip = svcData.reduce((s,v)  => s+v.count, 0);
+  const avgPerShip = totalShip > 0 ? totalCost/totalShip : 0;
 
-  const svcAgg = {{}};
-  svcData.forEach(s => {{ svcAgg[s.service_cat] = (svcAgg[s.service_cat] || 0) + s.count; }});
-  const topSvc = Object.entries(svcAgg).sort((a,b) => b[1]-a[1])[0];
+  const scNos = new Set(reconInv.map(i => i.invoice_no));
+  const totalSc = SC_DATA.filter(s => scNos.has(s.invoice_no)).reduce((s,v) => s+v.total, 0);
+  const scPct   = totalCost > 0 ? totalSc/totalCost*100 : 0;
 
-  const pendHtml = pendInv.length > 0
-    ? `<div class="kpi pending-kpi">
-        <div class="value">${{pendInv.length}}</div>
-        <div class="label">Oavstämda fakturor</div>
-        <div class="sub">${{fmt(pendCost)}} SEK (preliminärt)</div>
-       </div>`
-    : '';
+  const errCnt  = anomData.filter(a => a.severity==='Error').length;
+  const warnCnt = anomData.filter(a => a.severity==='Warning').length;
+  const anomCls = errCnt>0 ? 'red' : warnCnt>0 ? 'yellow' : 'green';
+  const anomSub = errCnt>0
+    ? `${{errCnt}} fel, ${{warnCnt}} varningar`
+    : warnCnt>0 ? `${{warnCnt}} varning${{warnCnt!==1?'ar':''}}`
+    : 'Inga avvikelser';
+
+  const pendCard = pendInv.length > 0 ? `
+    <div class="kpi orange">
+      <div class="value">${{pendInv.length}}</div>
+      <div class="label">Oavstämda</div>
+      <div class="sub">${{fmt(pendCost)}} SEK (preliminärt)</div>
+    </div>` : '';
 
   document.getElementById('kpiRow').innerHTML = `
-    <div class="kpi">
+    <div class="kpi blue">
       <div class="value">${{reconInv.length}}</div>
-      <div class="label">Avstämda fakturor</div>
+      <div class="label">Fakturor</div>
+      <div class="sub">Avstämda</div>
     </div>
-    ${{pendHtml}}
-    <div class="kpi">
+    ${{pendCard}}
+    <div class="kpi blue">
       <div class="value">${{fmtInt(totalCost)}}</div>
-      <div class="label">Total kostnad ex-moms (SEK)</div>
-      <div class="sub">Bekräftade fakturor</div>
+      <div class="label">Total kostnad ex-moms</div>
+      <div class="sub">SEK · bekräftade</div>
     </div>
-    <div class="kpi">
-      <div class="value">${{totalShipments.toLocaleString('sv-SE')}}</div>
-      <div class="label">Försändelser</div>
-      ${{topSvc ? `<div class="sub">Vanligast: ${{esc(topSvc[0])}} (${{topSvc[1]}})</div>` : ''}}
+    <div class="kpi grey">
+      <div class="value">${{fmt(avgPerShip)}}</div>
+      <div class="label">Snitt per försändelse</div>
+      <div class="sub">SEK ex-moms</div>
     </div>
-    <div class="kpi">
-      <div class="value">${{fmtInt(totalSurcharge)}}</div>
-      <div class="label">Totala tillägg ex-moms (SEK)</div>
-      <div class="sub">${{scPct.toFixed(1)}}% av total</div>
+    <div class="kpi ${{anomCls}}">
+      <div class="value">${{anomData.length}}</div>
+      <div class="label">Avvikelser</div>
+      <div class="sub">${{anomSub}}</div>
+    </div>
+    <div class="kpi grey">
+      <div class="value">${{scPct.toFixed(1)}}%</div>
+      <div class="label">Tillägg av total</div>
+      <div class="sub">${{fmtInt(totalSc)}} SEK</div>
     </div>
   `;
 }}
 
-// ── Invoice table ─────────────────────────────────────────────────────────────
-function renderInvoiceTable(invData) {{
-  document.getElementById('invCount').textContent = `(${{invData.length}} fakturor)`;
-  const body = document.getElementById('invBody');
-  if (!invData.length) {{
-    body.innerHTML = '<tr><td colspan="6" class="no-data">Inga fakturor matchar filtret.</td></tr>';
+// ── Recent invoices (expandable) ──────────────────────────────────────────────
+function toggleAllInvoices() {{
+  _showAllInv = !_showAllInv;
+  // Re-render with current filtered data — grab from last applyFilters call
+  // Simplest: trigger full re-apply
+  applyFilters();
+}}
+
+function renderRecentInvoices(invData) {{
+  const total = invData.length;
+  const shown = _showAllInv ? invData : invData.slice(0, RECENT_LIMIT);
+
+  document.getElementById('recentInvCount').textContent =
+    `(${{total}} faktura${{total!==1?'r':''}})`;
+
+  const body = document.getElementById('recentInvBody');
+  if (!total) {{
+    body.innerHTML = '<tr><td colspan="5" class="no-data">Inga fakturor.</td></tr>';
+    document.getElementById('showMoreBtn').style.display = 'none';
     return;
   }}
-  body.innerHTML = invData.map(i => {{
-    const pendStyle = i.status === 'Pending' ? ' style="opacity:.85"' : '';
-    return `<tr class="inv-row"${{pendStyle}} onclick="showInvoiceDetail('${{esc(i.invoice_no)}}')">
-      <td>${{i.status === 'Pending' ? '<em style="color:#aaa">—</em>' : esc(i.date)}}</td>
-      <td>${{esc(i.carrier)}}</td>
-      <td><strong>${{esc(i.invoice_no)}}</strong></td>
-      <td class="num">${{fmt(i.total)}}${{i.status==='Pending'?' <small style="color:#aaa">(spec)</small>':''}}</td>
-      <td>${{esc(i.currency)}}</td>
+
+  body.innerHTML = shown.map(i => {{
+    const pending = i.status === 'Pending';
+    return `<tr class="inv-row${{pending?' pending-row':''}}" onclick="showInvoiceDetail('${{esc(i.invoice_no)}}')">
+      <td style="white-space:nowrap">${{pending?'<em style="color:#ccc">—</em>':esc(i.date)}}</td>
+      <td style="white-space:nowrap">${{esc(i.carrier)}}</td>
+      <td><strong style="font-size:11px">${{esc(i.invoice_no)}}</strong></td>
+      <td class="num" style="white-space:nowrap">${{fmtInt(i.total)}}${{pending?' <small style="color:#ccc">*</small>':''}}</td>
       <td>${{badge(i.status)}}</td>
     </tr>`;
   }}).join('');
-}}
 
-// ── Service breakdown table ───────────────────────────────────────────────────
-function renderServiceTable(svcData) {{
-  const agg = {{}};
-  svcData.forEach(s => {{
-    const key = s.carrier + '||' + s.service_cat;
-    if (!agg[key]) agg[key] = {{carrier: s.carrier, service_cat: s.service_cat, count: 0, total: 0}};
-    agg[key].count += s.count;
-    agg[key].total += s.total;
-  }});
-  const rows = Object.values(agg).sort((a,b) => b.total - a.total);
-  const grandTotal = rows.reduce((s, r) => s + r.total, 0);
-
-  document.getElementById('svcCount').textContent = `(${{rows.length}} typer)`;
-  const body = document.getElementById('svcBody');
-  if (!rows.length) {{
-    body.innerHTML = '<tr><td colspan="6" class="no-data">Ingen data.</td></tr>';
-    return;
+  const btn = document.getElementById('showMoreBtn');
+  if (total <= RECENT_LIMIT) {{
+    btn.style.display = 'none';
+  }} else {{
+    btn.style.display = 'block';
+    const hidden = total - RECENT_LIMIT;
+    btn.textContent = _showAllInv
+      ? '▲ Visa färre'
+      : `▼ Visa ${{hidden}} äldre faktura${{hidden!==1?'r':''}}`;
   }}
-  body.innerHTML = rows.map(r => {{
-    const avg = r.count > 0 ? r.total / r.count : 0;
-    const pct = grandTotal > 0 ? r.total / grandTotal * 100 : 0;
-    return `<tr>
-      <td><strong>${{esc(r.service_cat)}}</strong></td>
-      <td>${{esc(r.carrier)}}</td>
-      <td class="num">${{r.count.toLocaleString('sv-SE')}}</td>
-      <td class="num">${{fmt(r.total)}}</td>
-      <td class="num">${{fmt(avg)}}</td>
-      <td class="num">${{pct.toFixed(1)}}%</td>
-    </tr>`;
-  }}).join('');
-
-  const totalCount = rows.reduce((s,r) => s + r.count, 0);
-  body.innerHTML += `<tr style="background:#f0f4ff;font-weight:bold">
-    <td>TOTAL</td><td>—</td>
-    <td class="num">${{totalCount.toLocaleString('sv-SE')}}</td>
-    <td class="num">${{fmt(grandTotal)}}</td>
-    <td class="num">—</td>
-    <td class="num">100.0%</td>
-  </tr>`;
 }}
 
-// ── Cost timeline — stacked bar ───────────────────────────────────────────────
+// ── Monthly chart (stacked bar) ───────────────────────────────────────────────
+function renderMonthlyChart(invData) {{
+  const recon  = invData.filter(i => i.status !== 'Pending');
+  const months = [...new Set(recon.map(i => i.month))].sort();
+  const cars   = [...new Set(recon.map(i => i.carrier))].sort();
+  const datasets = cars.map(c => ({{
+    label: c,
+    data: months.map(m => recon.filter(i=>i.month===m&&i.carrier===c).reduce((s,i)=>s+i.total,0)),
+    backgroundColor: cColA(c), borderColor: cCol(c), borderWidth:1,
+  }}));
+
+  document.getElementById('chartNote').textContent = months.length ? '' : '(ingen data)';
+
+  if (monthlyChart) {{
+    monthlyChart.data = {{labels:months, datasets}};
+    monthlyChart.update('active');
+  }} else {{
+    monthlyChart = new Chart(document.getElementById('monthlyChart'), {{
+      type: 'bar',
+      data: {{labels:months, datasets}},
+      options: {{
+        responsive:true,
+        plugins: {{legend:{{position:'bottom'}},
+          tooltip:{{callbacks:{{label:ctx=>' '+ctx.parsed.y.toLocaleString('sv-SE',{{minimumFractionDigits:2}})+' SEK'}}}}}},
+        scales: {{
+          x:{{stacked:true, grid:{{display:false}}}},
+          y:{{stacked:true, beginAtZero:true, ticks:{{callback:v=>v.toLocaleString('sv-SE')}}, grid:{{color:'#f5f5f5'}}}},
+        }},
+      }},
+    }});
+  }}
+}}
+
+// ── Timeline chart (stacked bar) ─────────────────────────────────────────────
 function setGranularity(g) {{
   _tlGran = g;
-  document.getElementById('btnMonthly').classList.toggle('active', g === 'monthly');
-  document.getElementById('btnYearly').classList.toggle('active',  g === 'yearly');
+  document.getElementById('btnMonthly').classList.toggle('active', g==='monthly');
+  document.getElementById('btnYearly').classList.toggle('active',  g==='yearly');
   applyFilters();
 }}
 
 function renderTimelineChart(invData) {{
-  const reconInv = invData.filter(i => i.status !== 'Pending');
-  const getKey = i => _tlGran === 'yearly' ? i.year : i.month;
-  const labels  = [...new Set(reconInv.map(getKey))].filter(Boolean).sort();
-  const cars    = [...new Set(reconInv.map(i => i.carrier))].sort();
-
+  const recon  = invData.filter(i => i.status !== 'Pending');
+  const getKey = i => _tlGran==='yearly' ? i.year : i.month;
+  const labels = [...new Set(recon.map(getKey))].filter(Boolean).sort();
+  const cars   = [...new Set(recon.map(i => i.carrier))].sort();
   const datasets = cars.map(c => ({{
-    label: c,
-    data: labels.map(lbl =>
-      reconInv.filter(i => getKey(i) === lbl && i.carrier === c)
-              .reduce((s, i) => s + i.total, 0)
-    ),
-    backgroundColor: carrierColorA(c),
-    borderColor: carrierColor(c),
-    borderWidth: 1,
+    label:c,
+    data: labels.map(lbl=>recon.filter(i=>getKey(i)===lbl&&i.carrier===c).reduce((s,i)=>s+i.total,0)),
+    backgroundColor:cColA(c), borderColor:cCol(c), borderWidth:1,
   }}));
 
-  const unit = _tlGran === 'yearly' ? 'år' : 'månad';
+  const unit = _tlGran==='yearly' ? 'år' : 'månad';
   document.getElementById('timelineNote').textContent =
     labels.length ? `(${{labels.length}} ${{unit}})` : '(ingen data)';
 
@@ -708,96 +725,16 @@ function renderTimelineChart(invData) {{
     timelineChart.update('active');
   }} else {{
     timelineChart = new Chart(document.getElementById('timelineChart'), {{
-      type: 'bar',
-      data: {{labels, datasets}},
-      options: {{
-        responsive: true,
-        interaction: {{mode: 'index', intersect: false}},
-        plugins: {{
-          legend: {{position: 'bottom'}},
-          tooltip: {{
-            callbacks: {{
-              label: ctx => ' ' + ctx.parsed.y.toLocaleString('sv-SE', {{minimumFractionDigits:2}}) + ' SEK',
-            }},
-          }},
-        }},
-        scales: {{
-          x: {{stacked: true, grid: {{display: false}}}},
-          y: {{
-            stacked: true,
-            beginAtZero: true,
-            ticks: {{callback: v => v.toLocaleString('sv-SE')}},
-            grid: {{color: '#f0f0f0'}},
-          }},
-        }},
-      }},
-    }});
-  }}
-}}
-
-// ── Monthly chart (stacked bar) ───────────────────────────────────────────────
-function renderMonthlyChart(invData) {{
-  const reconInv = invData.filter(i => i.status !== 'Pending');
-  const months  = [...new Set(reconInv.map(i => i.month))].sort();
-  const cars    = [...new Set(reconInv.map(i => i.carrier))].sort();
-  const datasets = cars.map(c => ({{
-    label: c,
-    data: months.map(m => reconInv.filter(i => i.month===m && i.carrier===c).reduce((s,i) => s+i.total, 0)),
-    backgroundColor: carrierColorA(c),
-    borderColor: carrierColor(c),
-    borderWidth: 1,
-  }}));
-
-  document.getElementById('chartNote').textContent = months.length ? '' : '(ingen data)';
-
-  if (monthlyChart) {{
-    monthlyChart.data = {{labels: months, datasets}};
-    monthlyChart.update('active');
-  }} else {{
-    monthlyChart = new Chart(document.getElementById('monthlyChart'), {{
-      type: 'bar',
-      data: {{labels: months, datasets}},
-      options: {{
-        responsive: true,
-        plugins: {{legend: {{position:'bottom'}}}},
-        scales: {{
-          x: {{stacked: true, grid:{{display:false}}}},
-          y: {{stacked: true, beginAtZero:true, ticks:{{callback: v => v.toLocaleString('sv-SE')}}}},
-        }},
-      }},
-    }});
-  }}
-}}
-
-// ── Carrier chart — grouped bar ───────────────────────────────────────────────
-function renderCarrierChart(invData) {{
-  const reconInv = invData.filter(i => i.status !== 'Pending');
-  const agg = {{}};
-  reconInv.forEach(i => {{ agg[i.carrier] = (agg[i.carrier]||0) + i.total; }});
-  const labels = Object.keys(agg).sort();
-  const data   = labels.map(l => Math.round(agg[l]*100)/100);
-  const colors = labels.map(carrierColorA);
-  const borders = labels.map(carrierColor);
-
-  if (carrierChart) {{
-    carrierChart.data = {{
-      labels,
-      datasets:[{{data, backgroundColor:colors, borderColor:borders, borderWidth:1}}]
-    }};
-    carrierChart.update('active');
-  }} else {{
-    carrierChart = new Chart(document.getElementById('carrierChart'), {{
-      type: 'bar',
-      data: {{labels, datasets:[{{data, backgroundColor:colors, borderColor:borders, borderWidth:1}}]}},
-      options: {{
-        responsive: true,
-        plugins: {{
-          legend: {{display: false}},
-          tooltip: {{callbacks:{{label: ctx => ' '+ctx.parsed.y.toLocaleString('sv-SE',{{minimumFractionDigits:2}})+' SEK'}}}},
-        }},
-        scales: {{
-          y: {{beginAtZero: true, ticks:{{callback: v => v.toLocaleString('sv-SE')}}}},
-          x: {{grid:{{display:false}}}},
+      type:'bar',
+      data:{{labels, datasets}},
+      options:{{
+        responsive:true,
+        interaction:{{mode:'index',intersect:false}},
+        plugins:{{legend:{{position:'bottom'}},
+          tooltip:{{callbacks:{{label:ctx=>' '+ctx.parsed.y.toLocaleString('sv-SE',{{minimumFractionDigits:2}})+' SEK'}}}}}},
+        scales:{{
+          x:{{stacked:true, grid:{{display:false}}}},
+          y:{{stacked:true, beginAtZero:true, ticks:{{callback:v=>v.toLocaleString('sv-SE')}}, grid:{{color:'#f5f5f5'}}}},
         }},
       }},
     }});
@@ -806,249 +743,178 @@ function renderCarrierChart(invData) {{
 
 // ── Surcharge chart ───────────────────────────────────────────────────────────
 function renderSurchargeChart(scData) {{
-  const agg = {{}};
-  scData.forEach(s => {{ agg[s.surcharge_cat] = (agg[s.surcharge_cat]||0) + s.total; }});
-  const sorted = Object.entries(agg).sort((a,b) => b[1]-a[1]);
-  const labels = sorted.map(x => x[0]);
-  const data   = sorted.map(x => Math.round(x[1]*100)/100);
+  const agg={{}};
+  scData.forEach(s=>{{ agg[s.surcharge_cat]=(agg[s.surcharge_cat]||0)+s.total; }});
+  const sorted=Object.entries(agg).sort((a,b)=>b[1]-a[1]);
+  const labels=sorted.map(x=>x[0]), data=sorted.map(x=>Math.round(x[1]*100)/100);
 
   document.getElementById('scCount').textContent = labels.length ? `(${{labels.length}} kategorier)` : '';
 
   if (surchargeChart) {{
-    surchargeChart.data = {{labels, datasets:[{{label:'SEK', data, backgroundColor:'#1565c0'}}]}};
+    surchargeChart.data={{labels, datasets:[{{label:'SEK', data, backgroundColor:'#1565c0'}}]}};
     surchargeChart.update('active');
   }} else {{
     surchargeChart = new Chart(document.getElementById('surchargeChart'), {{
-      type: 'bar',
-      data: {{labels, datasets:[{{label:'SEK', data, backgroundColor:'#1565c0'}}]}},
-      options: {{
-        indexAxis: 'y',
-        responsive: true,
-        plugins: {{legend:{{display:false}}}},
-        scales: {{x: {{beginAtZero:true, ticks:{{callback: v => v.toLocaleString('sv-SE')}}}}}},
+      type:'bar',
+      data:{{labels, datasets:[{{label:'SEK', data, backgroundColor:'rgba(21,101,192,.75)'}}]}},
+      options:{{
+        indexAxis:'y', responsive:true,
+        plugins:{{legend:{{display:false}}}},
+        scales:{{x:{{beginAtZero:true, ticks:{{callback:v=>v.toLocaleString('sv-SE')}}}}}},
       }},
     }});
   }}
 }}
 
-// ── Service cost breakdown table ──────────────────────────────────────────────
-function renderServiceCostTable(filtData) {{
-  const scCats = [...new Set(filtData.flatMap(s => Object.keys(s.sc_by_cat)))].sort();
-  const agg = {{}};
-  filtData.forEach(s => {{
-    const key = s.carrier + '||' + s.service_cat;
-    if (!agg[key]) {{
-      agg[key] = {{carrier: s.carrier, cat: s.service_cat, count: 0, base: 0, sc: {{}}, grand: 0}};
-      scCats.forEach(c => agg[key].sc[c] = 0);
-    }}
-    agg[key].count += s.count;
-    agg[key].base  += s.base_total;
-    scCats.forEach(c => {{ agg[key].sc[c] += s.sc_by_cat[c] || 0; }});
-    agg[key].grand += s.grand_total;
+// ── Service breakdown ─────────────────────────────────────────────────────────
+function renderServiceTable(svcData) {{
+  const agg={{}};
+  svcData.forEach(s=>{{
+    const k=s.carrier+'||'+s.service_cat;
+    if(!agg[k]) agg[k]={{carrier:s.carrier,service_cat:s.service_cat,count:0,total:0}};
+    agg[k].count+=s.count; agg[k].total+=s.total;
   }});
-
-  const rows = Object.values(agg).sort((a, b) => b.grand - a.grand);
-  document.getElementById('svcCostCount').textContent = `(${{rows.length}} typ${{rows.length !== 1 ? 'er' : ''}})`;
-
-  const scHeaders = scCats.map(c => `<th class="num" style="white-space:nowrap">${{esc(c)}}<br><small>Snitt</small></th>`).join('');
-  document.getElementById('svcCostHead').innerHTML = `<tr>
-    <th>Tjänstetyp</th><th>Transportör</th>
-    <th class="num">Försändelser</th>
-    <th class="num">Snitt bas ex-moms (SEK)</th>
-    ${{scHeaders}}
-    <th class="num">Snitt total ex-moms (SEK)</th>
-  </tr>`;
-
-  if (!rows.length) {{
-    document.getElementById('svcCostBody').innerHTML =
-      '<tr><td colspan="99" class="no-data">Ingen data.</td></tr>';
-    return;
-  }}
-
-  document.getElementById('svcCostBody').innerHTML = rows.map(r => {{
-    const n = r.count || 1;
-    const scCells = scCats.map(c =>
-      `<td class="num">${{fmt(r.sc[c] / n)}}</td>`
-    ).join('');
+  const rows=Object.values(agg).sort((a,b)=>b.total-a.total);
+  const grand=rows.reduce((s,r)=>s+r.total,0);
+  document.getElementById('svcCount').textContent=`(${{rows.length}} typer)`;
+  const body=document.getElementById('svcBody');
+  if(!rows.length){{body.innerHTML='<tr><td colspan="6" class="no-data">Ingen data.</td></tr>';return;}}
+  body.innerHTML=rows.map(r=>{{
+    const avg=r.count>0?r.total/r.count:0;
+    const pct=grand>0?r.total/grand*100:0;
     return `<tr>
-      <td><strong>${{esc(r.cat)}}</strong></td>
-      <td>${{esc(r.carrier)}}</td>
+      <td><strong>${{esc(r.service_cat)}}</strong></td><td>${{esc(r.carrier)}}</td>
       <td class="num">${{r.count.toLocaleString('sv-SE')}}</td>
-      <td class="num">${{fmt(r.base / n)}}</td>
-      ${{scCells}}
-      <td class="num"><strong>${{fmt(r.grand / n)}}</strong></td>
-    </tr>`;
+      <td class="num">${{fmt(r.total)}}</td><td class="num">${{fmt(avg)}}</td>
+      <td class="num">${{pct.toFixed(1)}}%</td></tr>`;
+  }}).join('');
+  const tc=rows.reduce((s,r)=>s+r.count,0);
+  body.innerHTML+=`<tr style="background:#f0f4ff;font-weight:700">
+    <td>TOTAL</td><td>—</td><td class="num">${{tc.toLocaleString('sv-SE')}}</td>
+    <td class="num">${{fmt(grand)}}</td><td class="num">—</td><td class="num">100.0%</td></tr>`;
+}}
+
+// ── Avg cost per service ──────────────────────────────────────────────────────
+function renderServiceCostTable(filtData) {{
+  const scCats=[...new Set(filtData.flatMap(s=>Object.keys(s.sc_by_cat)))].sort();
+  const agg={{}};
+  filtData.forEach(s=>{{
+    const k=s.carrier+'||'+s.service_cat;
+    if(!agg[k]){{agg[k]={{carrier:s.carrier,cat:s.service_cat,count:0,base:0,sc:{{}},grand:0}};
+      scCats.forEach(c=>agg[k].sc[c]=0);}}
+    agg[k].count+=s.count; agg[k].base+=s.base_total;
+    scCats.forEach(c=>{{agg[k].sc[c]+=s.sc_by_cat[c]||0;}});
+    agg[k].grand+=s.grand_total;
+  }});
+  const rows=Object.values(agg).sort((a,b)=>b.grand-a.grand);
+  document.getElementById('svcCostCount').textContent=`(${{rows.length}} typ${{rows.length!==1?'er':''}})`;
+  const scH=scCats.map(c=>`<th class="num">${{esc(c)}}<br><small style="font-weight:400">snitt</small></th>`).join('');
+  document.getElementById('svcCostHead').innerHTML=`<tr>
+    <th>Tjänstetyp</th><th>Transportör</th><th class="num">Antal</th>
+    <th class="num">Snitt bas (SEK)</th>${{scH}}<th class="num">Snitt total (SEK)</th></tr>`;
+  if(!rows.length){{document.getElementById('svcCostBody').innerHTML='<tr><td colspan="99" class="no-data">Ingen data.</td></tr>';return;}}
+  document.getElementById('svcCostBody').innerHTML=rows.map(r=>{{
+    const n=r.count||1;
+    const sc=scCats.map(c=>`<td class="num">${{fmt(r.sc[c]/n)}}</td>`).join('');
+    return `<tr><td><strong>${{esc(r.cat)}}</strong></td><td>${{esc(r.carrier)}}</td>
+      <td class="num">${{r.count.toLocaleString('sv-SE')}}</td>
+      <td class="num">${{fmt(r.base/n)}}</td>${{sc}}
+      <td class="num"><strong>${{fmt(r.grand/n)}}</strong></td></tr>`;
   }}).join('');
 }}
 
 // ── Anomaly table ─────────────────────────────────────────────────────────────
 function renderAnomalyTable(data) {{
-  document.getElementById('anomalyCount').textContent = data.length ? `(${{data.length}})` : '';
-  const body = document.getElementById('anomalyBody');
-  if (!data.length) {{
-    body.innerHTML = '<tr><td colspan="6" class="no-data">Inga avvikelser för valda filter.</td></tr>';
-    return;
-  }}
-  const sevStyle = {{
-    Warning: 'background:#fff8e1;color:#f57f17',
-    Error:   'background:#ffebee;color:#c62828',
-    Info:    'background:#e3f2fd;color:#1565c0',
-  }};
-  const sevIcon = {{Warning: '⚠', Error: '✗', Info: 'ℹ'}};
-  body.innerHTML = data.map(a => {{
-    const sty = sevStyle[a.severity] || 'background:#f5f5f5;color:#333';
-    const ic  = sevIcon[a.severity] || '?';
-    const expHtml = a.explanation
-      ? `<span style="color:#555">${{esc(a.explanation)}}</span>`
-      : `<span style="color:#bbb;font-style:italic">—</span>`;
-    return `<tr>
-      <td>${{esc(a.carrier)}}</td>
-      <td>${{esc(a.invoice_no)}}</td>
-      <td>${{esc(a.type)}}</td>
+  document.getElementById('anomalyCount').textContent=data.length?`(${{data.length}})`:'';
+  const body=document.getElementById('anomalyBody');
+  if(!data.length){{body.innerHTML='<tr><td colspan="6" class="no-data">Inga avvikelser för valda filter.</td></tr>';return;}}
+  const sS={{Warning:'background:#fff8e1;color:#f57f17',Error:'background:#ffebee;color:#c62828',Info:'background:#e3f2fd;color:#1565c0'}};
+  const sI={{Warning:'⚠',Error:'✗',Info:'ℹ'}};
+  body.innerHTML=data.map(a=>{{
+    const sty=sS[a.severity]||'background:#f5f5f5;color:#333';
+    const ic=sI[a.severity]||'?';
+    const exp=a.explanation?`<span style="color:#555">${{esc(a.explanation)}}</span>`:`<span style="color:#ccc;font-style:italic">—</span>`;
+    return `<tr><td>${{esc(a.carrier)}}</td><td>${{esc(a.invoice_no)}}</td><td>${{esc(a.type)}}</td>
       <td><span class="badge" style="${{sty}}">${{ic}} ${{esc(a.severity)}}</span></td>
-      <td>${{esc(a.description)}}</td>
-      <td>${{expHtml}}</td>
-    </tr>`;
+      <td>${{esc(a.description)}}</td><td>${{exp}}</td></tr>`;
   }}).join('');
 }}
 
 // ── Checks table ──────────────────────────────────────────────────────────────
 function renderChecks() {{
-  const body = document.getElementById('checkBody');
-  if (!CHECK_DATA.length) {{
-    body.innerHTML = '<tr><td colspan="5" class="no-data">Inga kontroller ännu.</td></tr>';
-    return;
-  }}
-  body.innerHTML = CHECK_DATA.map(c => `
-    <tr>
-      <td>${{esc(c.carrier)}}</td>
-      <td>${{esc(c.invoice_no)}}</td>
-      <td>${{esc(c.check)}}</td>
-      <td>${{badge(c.status)}}</td>
-      <td>${{esc(c.message)}}</td>
-    </tr>
-  `).join('');
+  const body=document.getElementById('checkBody');
+  if(!CHECK_DATA.length){{body.innerHTML='<tr><td colspan="5" class="no-data">Inga kontroller ännu.</td></tr>';return;}}
+  body.innerHTML=CHECK_DATA.map(c=>`<tr>
+    <td>${{esc(c.carrier)}}</td><td>${{esc(c.invoice_no)}}</td><td>${{esc(c.check)}}</td>
+    <td>${{badge(c.status)}}</td><td>${{esc(c.message)}}</td></tr>`).join('');
 }}
 
 // ── Invoice detail modal ───────────────────────────────────────────────────────
 function showInvoiceDetail(invNo) {{
-  const inv = INV_DATA.find(i => i.invoice_no === invNo);
-  if (!inv) return;
+  const inv=INV_DATA.find(i=>i.invoice_no===invNo);
+  if(!inv) return;
+  document.getElementById('modalTitle').textContent=`${{inv.carrier}} · Faktura ${{invNo}}`;
+  const isPending=inv.status==='Pending';
 
-  document.getElementById('modalTitle').textContent =
-    `${{inv.carrier}} — Faktura ${{invNo}}`;
-
-  // Header info
-  const isPending = inv.status === 'Pending';
-  const infoFields = [
-    ['Faktura #',    invNo],
-    ['Transportör',  inv.carrier],
-    ['Fakturadatum', inv.date || '—'],
-    ['Förfallodatum', inv.due_date || '—'],
-    ['Kundnummer',   inv.customer_number || '—'],
-    ['Valuta',       inv.currency || 'SEK'],
-    ['Total ex-moms', fmt(inv.total) + ' SEK' + (isPending ? ' (preliminärt från spec)' : '')],
-    ['Moms',         inv.vat_amount ? fmt(inv.vat_amount) + ' SEK' : '—'],
-    ['Total inkl moms', inv.total_inc_vat ? fmt(inv.total_inc_vat) + ' SEK' : '—'],
-    ['Status',       badge(inv.status)],
-    ['Källfil',      inv.source_file || '—'],
+  const fields=[
+    ['Faktura #',invNo],['Transportör',inv.carrier],
+    ['Fakturadatum',inv.date||'—'],['Förfallodatum',inv.due_date||'—'],
+    ['Kundnummer',inv.customer_number||'—'],['Valuta',inv.currency||'SEK'],
+    ['Total ex-moms', fmt(inv.total)+' SEK'+(isPending?' (spec)':'')],
+    ['Moms', inv.vat_amount?fmt(inv.vat_amount)+' SEK':'—'],
+    ['Total inkl moms', inv.total_inc_vat?fmt(inv.total_inc_vat)+' SEK':'—'],
+    ['Status', badge(inv.status)],['Källfil', esc(inv.source_file||'—')],
   ];
-  if (isPending && inv.pending_note) {{
-    infoFields.push(['Notering', inv.pending_note]);
-  }}
+  if(isPending&&inv.pending_note) fields.push(['Notering',esc(inv.pending_note)]);
 
-  const infoHtml = `<div class="info-grid">${{
-    infoFields.map(([lbl, val]) =>
-      `<div class="info-item"><div class="label">${{esc(lbl)}}</div><div class="value">${{val}}</div></div>`
-    ).join('')
-  }}</div>`;
+  const infoHtml=`<div class="info-grid">${{fields.map(([l,v])=>
+    `<div class="info-item"><div class="ilabel">${{esc(l)}}</div><div class="ivalue">${{v}}</div></div>`
+  ).join('')}}</div>`;
 
-  // Service breakdown
-  const svcRows = SVC_COST_DATA.filter(s => s.invoice_no === invNo)
-    .sort((a,b) => b.grand_total - a.grand_total);
-  const svcHtml = svcRows.length ? `
-    <table>
-      <thead><tr>
-        <th>Tjänstetyp</th>
-        <th class="num">Försändelser</th>
-        <th class="num">Bas ex-moms (SEK)</th>
-        <th class="num">Tillägg (SEK)</th>
-        <th class="num">Total ex-moms (SEK)</th>
-      </tr></thead>
-      <tbody>${{svcRows.map(r => `<tr>
-        <td><strong>${{esc(r.service_cat)}}</strong></td>
-        <td class="num">${{r.count.toLocaleString('sv-SE')}}</td>
-        <td class="num">${{fmt(r.base_total)}}</td>
-        <td class="num">${{fmt(r.sc_grand)}}</td>
-        <td class="num"><strong>${{fmt(r.grand_total)}}</strong></td>
-      </tr>`).join('')}}</tbody>
-    </table>` : '<p class="no-data">Ingen raddata tillgänglig.</p>';
+  const svcRows=SVC_COST_DATA.filter(s=>s.invoice_no===invNo).sort((a,b)=>b.grand_total-a.grand_total);
+  const svcHtml=svcRows.length?`<table>
+    <thead><tr><th>Tjänstetyp</th><th class="num">Antal</th><th class="num">Bas (SEK)</th><th class="num">Tillägg (SEK)</th><th class="num">Total (SEK)</th></tr></thead>
+    <tbody>${{svcRows.map(r=>`<tr><td><strong>${{esc(r.service_cat)}}</strong></td>
+      <td class="num">${{r.count.toLocaleString('sv-SE')}}</td>
+      <td class="num">${{fmt(r.base_total)}}</td><td class="num">${{fmt(r.sc_grand)}}</td>
+      <td class="num"><strong>${{fmt(r.grand_total)}}</strong></td></tr>`).join('')}}</tbody>
+  </table>`:'<p class="no-data">Ingen raddata.</p>';
 
-  // Surcharge breakdown
-  const scRows = SC_DATA.filter(s => s.invoice_no === invNo)
-    .sort((a,b) => b.total - a.total);
-  const scHtml = scRows.length ? `
-    <table>
-      <thead><tr>
-        <th>Tilläggstyp</th>
-        <th class="num">Belopp (SEK)</th>
-      </tr></thead>
-      <tbody>${{scRows.map(r => `<tr>
-        <td>${{esc(r.surcharge_cat)}}</td>
-        <td class="num">${{fmt(r.total)}}</td>
-      </tr>`).join('')}}</tbody>
-    </table>` : '<p class="no-data">Inga tilläggsavgifter.</p>';
+  const scRows=SC_DATA.filter(s=>s.invoice_no===invNo).sort((a,b)=>b.total-a.total);
+  const scHtml=scRows.length?`<table>
+    <thead><tr><th>Tilläggstyp</th><th class="num">Belopp (SEK)</th></tr></thead>
+    <tbody>${{scRows.map(r=>`<tr><td>${{esc(r.surcharge_cat)}}</td><td class="num">${{fmt(r.total)}}</td></tr>`).join('')}}</tbody>
+  </table>`:'<p class="no-data">Inga tillägg.</p>';
 
-  // Anomalies
-  const anom = ANOMALY_DATA.filter(a => a.invoice_no === invNo);
-  const anomHtml = anom.length ? `
-    <table>
-      <thead><tr>
-        <th>Typ</th><th>Allvarlighet</th><th>Beskrivning</th>
-      </tr></thead>
-      <tbody>${{anom.map(a => `<tr>
-        <td>${{esc(a.type)}}</td>
-        <td>${{badge(a.severity)}}</td>
-        <td>${{esc(a.description)}}</td>
-      </tr>`).join('')}}</tbody>
-    </table>` : '<p class="no-data">Inga avvikelser.</p>';
+  const anom=ANOMALY_DATA.filter(a=>a.invoice_no===invNo);
+  const anomHtml=anom.length?`<table>
+    <thead><tr><th>Typ</th><th>Allvarlighet</th><th>Beskrivning</th></tr></thead>
+    <tbody>${{anom.map(a=>`<tr><td>${{esc(a.type)}}</td><td>${{badge(a.severity)}}</td><td>${{esc(a.description)}}</td></tr>`).join('')}}</tbody>
+  </table>`:'<p class="no-data">Inga avvikelser.</p>';
 
-  // Validation checks
-  const chks = CHECK_DATA.filter(c => c.invoice_no === invNo);
-  const chkHtml = chks.length ? `
-    <table>
-      <thead><tr>
-        <th>Kontroll</th><th>Status</th><th>Meddelande</th>
-      </tr></thead>
-      <tbody>${{chks.map(c => `<tr>
-        <td>${{esc(c.check)}}</td>
-        <td>${{badge(c.status)}}</td>
-        <td>${{esc(c.message)}}</td>
-      </tr>`).join('')}}</tbody>
-    </table>` : '<p class="no-data">Inga kontrollresultat tillgängliga.</p>';
+  const chks=CHECK_DATA.filter(c=>c.invoice_no===invNo);
+  const chkHtml=chks.length?`<table>
+    <thead><tr><th>Kontroll</th><th>Status</th><th>Meddelande</th></tr></thead>
+    <tbody>${{chks.map(c=>`<tr><td>${{esc(c.check)}}</td><td>${{badge(c.status)}}</td><td>${{esc(c.message)}}</td></tr>`).join('')}}</tbody>
+  </table>`:'<p class="no-data">Inga kontrollresultat.</p>';
 
-  document.getElementById('modalBody').innerHTML = `
+  document.getElementById('modalBody').innerHTML=`
     <div class="modal-section"><h4>Fakturainformation</h4>${{infoHtml}}</div>
     <div class="modal-section"><h4>Tjänstesammansättning</h4>${{svcHtml}}</div>
     <div class="modal-section"><h4>Tilläggsavgifter</h4>${{scHtml}}</div>
     <div class="modal-section"><h4>Avvikelser</h4>${{anomHtml}}</div>
-    <div class="modal-section"><h4>Kontroller</h4>${{chkHtml}}</div>
-  `;
+    <div class="modal-section"><h4>Kontroller</h4>${{chkHtml}}</div>`;
 
   document.getElementById('modalOverlay').classList.add('open');
-  document.body.style.overflow = 'hidden';
+  document.body.style.overflow='hidden';
 }}
 
 function closeModal() {{
   document.getElementById('modalOverlay').classList.remove('open');
-  document.body.style.overflow = '';
+  document.body.style.overflow='';
 }}
-
-function closeModalOnBg(e) {{
-  if (e.target === document.getElementById('modalOverlay')) closeModal();
-}}
-
-document.addEventListener('keydown', e => {{ if (e.key === 'Escape') closeModal(); }});
+function closeModalOnBg(e) {{ if(e.target===document.getElementById('modalOverlay')) closeModal(); }}
+document.addEventListener('keydown', e=>{{ if(e.key==='Escape') closeModal(); }});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 applyFilters();
