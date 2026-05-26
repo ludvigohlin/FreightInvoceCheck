@@ -191,6 +191,43 @@ def write_anomalies(
     logger.info("OutputWriter", f"Wrote {len(rows)} anomaly record(s) to anomalies.csv")
 
 
+PENDING_INVOICE_FIELDS = [
+    "run_id", "processed_timestamp", "carrier", "invoice_number",
+    "reconciliation_status", "known_total_ex_vat", "source_file", "note",
+]
+
+
+def write_pending_invoices(
+    missing_bring: list,
+    logger: ProcessingLogger,
+    run_id: str = "",
+) -> None:
+    """
+    Overwrite pending_invoices.csv with the current set of incomplete invoices.
+    Called every run so the file always reflects what is currently unresolved.
+    """
+    from datetime import datetime
+    config.ensure_all_directories()
+    rows = []
+    for m in missing_bring:
+        rows.append({
+            "run_id": run_id,
+            "processed_timestamp": datetime.now().isoformat(timespec="seconds"),
+            "carrier": "Bring",
+            "invoice_number": m.get("invoice_number", ""),
+            "reconciliation_status": "Pending",
+            "known_total_ex_vat": m.get("known_total_ex_vat", ""),
+            "source_file": m.get("source_file", ""),
+            "note": m.get("message", ""),
+        })
+    path = config.PENDING_INVOICES_CSV
+    with open(path, "w", newline="", encoding=config.CSV_ENCODING) as f:
+        w = csv.DictWriter(f, fieldnames=PENDING_INVOICE_FIELDS, delimiter=config.CSV_DELIMITER)
+        w.writeheader()
+        w.writerows(rows)
+    logger.info("OutputWriter", f"Wrote {len(rows)} pending invoice(s) to pending_invoices.csv")
+
+
 def ensure_all_output_headers() -> None:
     """Pre-create all output CSV files with headers so they exist even on empty runs."""
     config.ensure_all_directories()

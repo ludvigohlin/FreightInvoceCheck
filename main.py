@@ -51,6 +51,7 @@ from src.output_writer import (
     write_surcharge_lines,
     write_invoice_checks,
     write_anomalies,
+    write_pending_invoices,
 )
 from src.summary_writer import (
     build_summary_payload,
@@ -302,20 +303,26 @@ def main():
         has_pdf = ("Bring", inv_num) in all_pdf_headers
         has_xls = ("Bring", inv_num) in all_excel_headers
         if has_pdf and not has_xls:
+            ph = all_pdf_headers[("Bring", inv_num)]
             missing_bring.append({
                 "invoice_number": inv_num,
                 "missing_file": "Excel specification (.xlsx)",
                 "found_file": "PDF invoice",
+                "known_total_ex_vat": ph.total_ex_vat if ph else "",
+                "source_file": ph.source_file if ph else "",
                 "message": "PDF invoice received but Excel specification is missing. "
                            "Cannot reconcile line items without the specification.",
             })
             logger.warning("Main",
                            f"Bring invoice {inv_num}: PDF received but Excel specification is missing.")
         elif has_xls and not has_pdf:
+            xh = all_excel_headers[("Bring", inv_num)]
             missing_bring.append({
                 "invoice_number": inv_num,
                 "missing_file": "PDF invoice",
                 "found_file": "Excel specification (.xlsx)",
+                "known_total_ex_vat": xh.total_ex_vat if xh else "",
+                "source_file": xh.source_file if xh else "",
                 "message": "Excel specification received but PDF invoice is missing. "
                            "Cannot confirm invoice total without the PDF.",
             })
@@ -378,6 +385,7 @@ def main():
     new_checks = [c for c in all_checks if (c.carrier, c.invoice_number) not in existing_keys]
     write_invoice_checks(new_checks, logger)
     write_anomalies(all_anomalies, logger, skip_keys=existing_keys)
+    write_pending_invoices(missing_bring, logger, run_id=run_id)
 
     # ── Step 6: Generate summaries ────────────────────────────────────────────
     logger.info("Main", "Step 6: Generating summaries...")

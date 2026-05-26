@@ -34,6 +34,7 @@ INVOICE_LINES_CSV = DASHBOARD_DATA_DIR / "invoice_lines.csv"
 SURCHARGE_LINES_CSV = DASHBOARD_DATA_DIR / "surcharge_lines.csv"
 INVOICE_CHECKS_CSV = DASHBOARD_DATA_DIR / "invoice_checks.csv"
 ANOMALIES_CSV = DASHBOARD_DATA_DIR / "anomalies.csv"
+PENDING_INVOICES_CSV = DASHBOARD_DATA_DIR / "pending_invoices.csv"
 PROCESSING_LOG_CSV = LOGS_DIR / "processing_log.csv"
 
 # ── Supported inbox file extensions ──────────────────────────────────────────
