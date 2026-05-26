@@ -371,10 +371,10 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
   <!-- Charts + Recent invoices -->
   <div class="grid-2-1">
     <div class="card">
-      <h2>Månadskostnad per transportör ex-moms (SEK)
-        <span class="count" id="chartNote"></span>
+      <h2>Antal försändelser per månad
+        <span class="count" id="volumeNote"></span>
       </h2>
-      <canvas id="monthlyChart" height="195"></canvas>
+      <canvas id="volumeChart" height="195"></canvas>
     </div>
     <div class="card" style="display:flex;flex-direction:column">
       <h2>Senaste fakturor <span class="count" id="recentInvCount"></span></h2>
@@ -506,7 +506,7 @@ function esc(s) {{
 function fmt(n)    {{ return (+n).toLocaleString('sv-SE',{{minimumFractionDigits:2,maximumFractionDigits:2}}); }}
 function fmtInt(n) {{ return Math.round(n).toLocaleString('sv-SE'); }}
 
-let monthlyChart, surchargeChart, timelineChart;
+let volumeChart, surchargeChart, timelineChart;
 let _tlGran   = 'monthly';
 let _recFilter = 'all';
 let _showAllInv = false;
@@ -544,7 +544,7 @@ function applyFilters() {{
 
   renderKPIs(filtInv, filtSvc, filtAnom);
   renderRecentInvoices(filtInv);
-  renderMonthlyChart(filtInv);
+  renderVolumeChart(filtSvc);
   renderTimelineChart(filtInv);
   renderServiceCostTable(filtSvcCost);
   renderServiceTable(filtSvc);
@@ -664,30 +664,37 @@ function renderRecentInvoices(invData) {{
   }}
 }}
 
-// ── Monthly chart (stacked bar) ───────────────────────────────────────────────
-function renderMonthlyChart(invData) {{
-  const recon  = invData.filter(i => i.status !== 'Pending');
-  const months = [...new Set(recon.map(i => i.month))].sort();
-  const cars   = [...new Set(recon.map(i => i.carrier))].sort();
+// ── Volume chart — shipments per month per carrier ────────────────────────────
+function renderVolumeChart(svcData) {{
+  // Aggregate shipment counts by (month, carrier) from SVC_DATA
+  const agg = {{}};
+  svcData.forEach(s => {{
+    const k = s.month + '||' + s.carrier;
+    if (!agg[k]) agg[k] = {{month: s.month, carrier: s.carrier, count: 0}};
+    agg[k].count += s.count;
+  }});
+  const months = [...new Set(Object.values(agg).map(v => v.month))].filter(Boolean).sort();
+  const cars   = [...new Set(Object.values(agg).map(v => v.carrier))].sort();
   const datasets = cars.map(c => ({{
     label: c,
-    data: months.map(m => recon.filter(i=>i.month===m&&i.carrier===c).reduce((s,i)=>s+i.total,0)),
+    data: months.map(m => (agg[m+'||'+c] || {{count:0}}).count),
     backgroundColor: cColA(c), borderColor: cCol(c), borderWidth:1,
   }}));
 
-  document.getElementById('chartNote').textContent = months.length ? '' : '(ingen data)';
+  const total = Object.values(agg).reduce((s,v) => s+v.count, 0);
+  document.getElementById('volumeNote').textContent = total ? `(${{total.toLocaleString('sv-SE')}} tot.)` : '(ingen data)';
 
-  if (monthlyChart) {{
-    monthlyChart.data = {{labels:months, datasets}};
-    monthlyChart.update('active');
+  if (volumeChart) {{
+    volumeChart.data = {{labels:months, datasets}};
+    volumeChart.update('active');
   }} else {{
-    monthlyChart = new Chart(document.getElementById('monthlyChart'), {{
+    volumeChart = new Chart(document.getElementById('volumeChart'), {{
       type: 'bar',
       data: {{labels:months, datasets}},
       options: {{
         responsive:true,
         plugins: {{legend:{{position:'bottom'}},
-          tooltip:{{callbacks:{{label:ctx=>' '+ctx.parsed.y.toLocaleString('sv-SE',{{minimumFractionDigits:2}})+' SEK'}}}}}},
+          tooltip:{{callbacks:{{label:ctx=>' '+ctx.parsed.y.toLocaleString('sv-SE')+' st'}}}}}},
         scales: {{
           x:{{grid:{{display:false}}}},
           y:{{beginAtZero:true, ticks:{{callback:v=>v.toLocaleString('sv-SE')}}, grid:{{color:'#f5f5f5'}}}},
