@@ -177,30 +177,47 @@ def detect_bring_anomalies(
                 suggested_action="Verify volume and rate match contract for this service type.",
             ))
 
-    # ── Duplicate shipment numbers ────────────────────────────────────────────
-    shipment_counts = Counter(
-        ln.shipment_number for ln in base_lines if ln.shipment_number
+    # ── Duplicate package numbers (kollinummer) ───────────────────────────────
+    # A försändelse can contain multiple kolli — multiple lines per shipment_number
+    # is normal. A duplicate kollinummer means the same physical package was billed twice.
+    package_counts = Counter(
+        ln.package_number for ln in base_lines if ln.package_number
     )
-    for shipment_num, count in shipment_counts.items():
+    for pkg_num, count in package_counts.items():
         if count > 1:
+            ship_nums = list({
+                ln.shipment_number for ln in base_lines
+                if ln.package_number == pkg_num and ln.shipment_number
+            })
+            ship_ref = f" (försändelse {ship_nums[0]})" if ship_nums else ""
             anomalies.append(Anomaly(
-                anomaly_type="DuplicateShipment",
+                anomaly_type="DuplicatePackage",
                 severity="Warning",
                 carrier=carrier,
                 invoice_number=inv_num,
-                description=f"Shipment {shipment_num} appears {count} times on base freight lines.",
-                detail=f"Shipment: {shipment_num}",
+                description=(
+                    f"Kolli {pkg_num} appears {count} times on base freight lines{ship_ref}."
+                ),
+                detail=f"Kolli: {pkg_num}" + (f" | Försändelse: {ship_nums[0]}" if ship_nums else ""),
                 value=float(count),
-                suggested_action="Check for duplicate billing of the same shipment.",
+                suggested_action="Check for duplicate billing of the same kolli.",
             ))
 
     # ── Weight anomalies ──────────────────────────────────────────────────────
     weighted_lines = [ln for ln in base_lines if ln.weight_kg and ln.weight_kg > 0 and ln.amount]
     if weighted_lines:
-        avg_cost_per_kg = (
-            sum(ln.amount for ln in weighted_lines) /
-            sum(ln.weight_kg for ln in weighted_lines)
-        )
+        # Per-service-category cost/kg averages — pallets and parcels have very
+        # different rates so comparing across categories produces false positives.
+        from collections import defaultdict as _dd
+        _svc_wt: dict = _dd(lambda: {"amt": 0.0, "kg": 0.0})
+        for ln in weighted_lines:
+            cat = ln.service_category or "Unknown"
+            _svc_wt[cat]["amt"] += ln.amount
+            _svc_wt[cat]["kg"] += ln.weight_kg
+        svc_avg_cpkg = {
+            cat: v["amt"] / v["kg"]
+            for cat, v in _svc_wt.items() if v["kg"] > 0
+        }
 
         # Weight-limit check
         for ln in base_lines:
@@ -223,18 +240,23 @@ def detect_bring_anomalies(
                     suggested_action="Verify fraktberäknad vikt — may indicate volume weight exceeds physical weight limit for this service type.",
                 ))
 
-        # Cost-per-kg outliers — require BOTH a relative ratio AND an absolute floor
-        # to avoid noise from low-average invoices. Cap at 10 to prevent Claude token overflow.
+        # Cost-per-kg outliers within same service category — require BOTH a relative
+        # ratio AND an absolute floor to avoid noise. Cap at 10 to prevent token overflow.
         _high_cpkg: list[tuple[float, BringInvoiceLine]] = []
         for ln in base_lines:
-            if ln.weight_kg and ln.weight_kg > 0 and ln.amount and avg_cost_per_kg > 0:
-                cost_per_kg = ln.amount / ln.weight_kg
-                ratio = cost_per_kg / avg_cost_per_kg
-                if ratio > cost_per_kg_multiplier and cost_per_kg > min_cost_per_kg_absolute:
-                    _high_cpkg.append((ratio, ln))
+            if ln.weight_kg and ln.weight_kg > 0 and ln.amount:
+                cat = ln.service_category or "Unknown"
+                cat_avg = svc_avg_cpkg.get(cat, 0)
+                if cat_avg > 0:
+                    cost_per_kg = ln.amount / ln.weight_kg
+                    ratio = cost_per_kg / cat_avg
+                    if ratio > cost_per_kg_multiplier and cost_per_kg > min_cost_per_kg_absolute:
+                        _high_cpkg.append((ratio, ln))
         for ratio, ln in sorted(_high_cpkg, key=lambda x: -x[0])[:10]:
             ship_ref = f"Shipment {ln.shipment_number}" if ln.shipment_number else f"Line {ln.line_no}"
             cost_per_kg = ln.amount / ln.weight_kg
+            cat = ln.service_category or "Unknown"
+            cat_avg = svc_avg_cpkg.get(cat, 0)
             anomalies.append(Anomaly(
                 anomaly_type="HighCostPerKg",
                 severity="Info",
@@ -242,11 +264,11 @@ def detect_bring_anomalies(
                 invoice_number=inv_num,
                 description=(
                     f"{ship_ref} cost/fraktberäknad vikt is {cost_per_kg:.2f} SEK/kg — "
-                    f"{ratio:.1f}x invoice average ({avg_cost_per_kg:.2f} SEK/kg)."
+                    f"{ratio:.1f}x {cat} average ({cat_avg:.2f} SEK/kg)."
                 ),
                 line_no=ln.line_no,
                 value=round(cost_per_kg, 2),
-                threshold=round(avg_cost_per_kg * cost_per_kg_multiplier, 2),
+                threshold=round(cat_avg * cost_per_kg_multiplier, 2),
                 detail=f"Shipment: {ln.shipment_number} | Service: {ln.service_name_raw} | Weight: {ln.weight_kg} kg",
                 suggested_action="Check if fraktberäknad vikt is correct — volume weight may be inflating the chargeable weight.",
             ))

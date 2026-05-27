@@ -138,7 +138,7 @@ def _compute_service_breakdown(lines) -> list[dict]:
 
 # ── Sheet builders ─────────────────────────────────────────────────────────────
 
-def _sheet_run_summary(ws, run_id: str, payload: dict, all_lines, headers=None) -> None:
+def _sheet_run_summary(ws, run_id: str, payload: dict, all_lines, headers=None, anomalies=None) -> None:
     total_amount = sum(ln.amount or 0.0 for ln in all_lines)
     surcharge_amount = sum(
         ln.amount or 0.0 for ln in all_lines if ln.line_type == "Surcharge"
@@ -264,6 +264,29 @@ def _sheet_run_summary(ws, run_id: str, payload: dict, all_lines, headers=None) 
     _kv_row(row, "Errors",        err_n); row += 1
     _kv_row(row, "Overall Status", _STATUS_TEXT.get(overall, overall),
             status_key=overall); row += 1
+    row += 1
+
+    # ── Anomalies ─────────────────────────────────────────────────────────────
+    anom_list = anomalies or []
+    anom_errors   = sum(1 for a in anom_list if a.severity == "Error")
+    anom_warnings = sum(1 for a in anom_list if a.severity == "Warning")
+    anom_info     = sum(1 for a in anom_list if a.severity == "Info")
+    anom_total    = len(anom_list)
+    anom_status   = "Error" if anom_errors else ("Warning" if anom_warnings else "OK")
+    anom_status_txt = (
+        f"YES — {anom_total} anomal{'y' if anom_total == 1 else 'ies'}"
+        if anom_total else "None detected"
+    )
+    _sec_header(row, "Anomalies"); row += 1
+    _kv_row(row, "Total Anomalies", anom_total); row += 1
+    if anom_errors:
+        _kv_row(row, "Errors",   anom_errors,   status_key="Error");   row += 1
+    if anom_warnings:
+        _kv_row(row, "Warnings", anom_warnings, status_key="Warning"); row += 1
+    if anom_info:
+        _kv_row(row, "Info",     anom_info); row += 1
+    _kv_row(row, "Anomaly Status", anom_status_txt,
+            status_key=anom_status if anom_total else "OK"); row += 1
 
     ws.column_dimensions["A"].width = 30
     ws.column_dimensions["B"].width = 20
@@ -521,7 +544,7 @@ def _write_excel(
 
     ws1 = wb.active
     ws1.title = "Summary"
-    _sheet_run_summary(ws1, run_id, payload, lines, headers=headers)
+    _sheet_run_summary(ws1, run_id, payload, lines, headers=headers, anomalies=anomalies)
 
     ws2 = wb.create_sheet("Invoices")
     _sheet_invoice_details(ws2, headers)
