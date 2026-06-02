@@ -44,6 +44,7 @@ SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv"}
 USE_CLAUDE_API: bool = os.getenv("USE_CLAUDE_API", "false").lower() == "true"
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+SEND_EMAIL: bool = os.getenv("SEND_EMAIL", "true").lower() == "true"
 MOVE_FILES_AFTER_PROCESSING: bool = (
     os.getenv("MOVE_FILES_AFTER_PROCESSING", "false").lower() == "true"
 )

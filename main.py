@@ -67,6 +67,7 @@ from src.claude_client import (
 )
 from src.run_exporter import write_run_export
 from src.dashboard_writer import write_html_dashboard
+from src.email_sender import send_summary_email
 
 
 def parse_args():
@@ -452,6 +453,17 @@ def main():
     else:
         logger.info("Main", "Step 8: Skipping For_Email export — no new invoices.")
     write_html_dashboard(logger)
+
+    # ── Step 9: Email summary ─────────────────────────────────────────────────
+    xlsx_path = config.FOR_EMAIL_DIR / f"summary_{run_id}.xlsx"
+    send_summary_email(
+        run_id=run_id,
+        summary_md_path=det_path,
+        xlsx_path=xlsx_path if xlsx_path.exists() else None,
+        logger=logger,
+        check_counts=payload.get("check_counts", {}),
+        total_amount=sum(ln.amount or 0.0 for ln in all_invoice_lines),
+    )
 
     # ── File movement (if configured) ─────────────────────────────────────────
     if config.MOVE_FILES_AFTER_PROCESSING:
