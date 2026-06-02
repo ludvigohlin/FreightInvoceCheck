@@ -98,6 +98,27 @@ Hard rules:
 - If you cannot identify the carrier, set carrier_name to "Unknown".
 - Return ONLY the JSON object."""
 
+VALIDATION_EXPLANATION_PROMPT = """Below are validation checks that produced a Warning or Error on a freight invoice.
+For each issue, briefly explain in plain business language what likely caused it and what to do about it.
+
+Rules:
+- Do not change any numbers or statuses — the code has already decided those.
+- Be concise: 1-2 sentences per issue.
+- If the issue is a line sum mismatch, suggest whether it looks like rounding, a missing line, or a known PostNord pattern.
+- If no lines were parsed, suggest what type of document this might be (supplement, credit note, adjustment invoice).
+
+Issues:
+{issues_json}
+
+Return JSON array only:
+[
+  {{
+    "check_name": "...",
+    "invoice_number": "...",
+    "explanation": "1-2 sentence plain-language explanation of the likely cause and recommended action."
+  }}
+]"""
+
 ANOMALY_EXPLANATION_PROMPT = """Below are anomalies detected by automated code in a freight invoice.
 Explain each anomaly in plain business language. For each, provide:
 - A short explanation of what it means

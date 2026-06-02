@@ -30,6 +30,7 @@ from src.prompts import (
     CLASSIFICATION_USER_PROMPT,
     MANAGEMENT_SUMMARY_PROMPT,
     ANOMALY_EXPLANATION_PROMPT,
+    VALIDATION_EXPLANATION_PROMPT,
     UNKNOWN_CARRIER_EXTRACTION_PROMPT,
 )
 from src.utils import hash_string
@@ -237,6 +238,44 @@ def extract_unknown_carrier_invoice(
         _log_request(run_id, "unknown_carrier_extraction", payload, "", False, str(e))
         logger.warning("ClaudeClient", f"Unknown carrier extraction failed: {e}", error=e)
         return None
+
+
+def explain_validation_issues(
+    run_id: str,
+    issues_payload: list[dict],
+    logger: ProcessingLogger,
+) -> list[dict]:
+    """
+    Ask Claude to explain Warning/Error validation checks in plain language.
+    Returns list of explanation dicts. Falls back to empty list on failure.
+    Status values are never changed — Claude only adds human-readable context.
+    """
+    if not is_claude_enabled() or not issues_payload:
+        return []
+
+    try:
+        client = _get_client()
+        user_msg = VALIDATION_EXPLANATION_PROMPT.format(
+            issues_json=json.dumps(issues_payload, ensure_ascii=False, indent=2)
+        )
+        response = client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        response_text = response.content[0].text.strip()
+        _log_request(run_id, "explain_validation", {"issues": issues_payload}, response_text, True)
+
+        explanations = json.loads(_strip_code_fence(response_text))
+        if not isinstance(explanations, list):
+            return []
+        return explanations
+
+    except Exception as e:
+        _log_request(run_id, "explain_validation", {"issues": issues_payload}, "", False, str(e))
+        logger.warning("ClaudeClient", f"Claude validation explanation failed: {e}", error=e)
+        return []
 
 
 def explain_anomalies(

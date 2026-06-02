@@ -63,6 +63,7 @@ from src.claude_client import (
     classify_ambiguous_line,
     generate_management_summary,
     explain_anomalies,
+    explain_validation_issues,
 )
 from src.run_exporter import write_run_export
 from src.dashboard_writer import write_html_dashboard
@@ -373,6 +374,26 @@ def main():
 
     # Apply reconciliation status before writing so CSVs have correct values
     _apply_reconciliation_status(all_invoice_headers, all_checks)
+
+    # ── Optional: Claude validation explanations ──────────────────────────────
+    if is_claude_enabled():
+        issue_checks = [c for c in all_checks if c.severity in ("Warning", "Error")]
+        if issue_checks:
+            logger.info("Main", f"Requesting Claude explanations for {len(issue_checks)} validation issue(s)...")
+            issues_payload = [
+                {"check_name": c.check_name, "invoice_number": c.invoice_number,
+                 "carrier": c.carrier, "status": c.status, "message": c.message}
+                for c in issue_checks
+            ]
+            val_explanations = explain_validation_issues(run_id, issues_payload, logger)
+            val_exp_map = {
+                (e.get("check_name"), e.get("invoice_number")): e.get("explanation", "")
+                for e in val_explanations if isinstance(e, dict)
+            }
+            for c in all_checks:
+                explanation = val_exp_map.get((c.check_name, c.invoice_number), "")
+                if explanation:
+                    c.claude_explanation = explanation
 
     # ── Step 5: Write output CSVs (with run-level deduplication) ─────────────
     logger.info("Main", "Step 5: Writing output files...")

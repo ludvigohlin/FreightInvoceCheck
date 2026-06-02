@@ -232,6 +232,8 @@ def write_deterministic_summary(
             for c in inv_issues:
                 icon = "✗" if c.severity == "Error" else "⚠"
                 md.append(f"- {icon} **{c.check_name}**: {c.message}")
+                if c.claude_explanation:
+                    md.append(f"  - _AI: {c.claude_explanation}_")
         md.append("")
 
     md.append("## Anomalies")

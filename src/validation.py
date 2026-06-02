@@ -26,6 +26,7 @@ class CheckResult:
     severity: str     # OK | Warning | Error
     message: str
     source_files: str
+    claude_explanation: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -41,6 +42,7 @@ class CheckResult:
             "severity": self.severity,
             "message": self.message,
             "source_files": self.source_files,
+            "claude_explanation": self.claude_explanation,
         }
 
 
