@@ -51,7 +51,7 @@ _SEV_FONT = {
 
 _BSIDE  = Side(style="thin", color=_GRAY_BRD)
 _BORDER = Border(left=_BSIDE, right=_BSIDE, top=_BSIDE, bottom=_BSIDE)
-_STATUS_ICON = {"OK": "✓", "Warning": "⚠", "Error": "✗"}
+_STATUS_LABEL = {"OK": "OK", "Warning": "Warning", "Error": "Error"}
 
 
 def _fmt(val: Any) -> str:
@@ -238,11 +238,10 @@ def _sheet_overview(ws, run_id: str, headers, checks, anomalies, payload: dict,
         )
         recon_txt = ""
         if recon_chk:
-            icon = _STATUS_ICON.get(recon_chk.status, "?")
-            recon_txt = f"{icon} {recon_chk.status}"
+            recon_txt = recon_chk.status
 
         inv_status = "Error" if n_err else ("Warning" if (n_warn or n_anom) else "OK")
-        status_txt = f"{_STATUS_ICON[inv_status]} {'OK' if inv_status == 'OK' else inv_status}"
+        status_txt = inv_status
         amt = h.total_ex_vat or 0.0
         grand_total += amt
 
@@ -281,10 +280,9 @@ def _sheet_overview(ws, run_id: str, headers, checks, anomalies, payload: dict,
     issue_checks = [c for c in checks if c.severity in ("Error", "Warning")]
     warn_anomalies = [a for a in (anomalies or []) if a.severity in ("Error", "Warning")]
     if issue_checks or warn_anomalies or missing_bring:
-        _section_header(ws, row, "⚠ Action Items", NCOLS); row += 1
+        _section_header(ws, row, "Action Items", NCOLS); row += 1
         for c in sorted(issue_checks, key=lambda x: 0 if x.severity == "Error" else 1):
-            icon = "✗" if c.severity == "Error" else "⚠"
-            txt = f"{icon}  {c.carrier} {c.invoice_number} — {c.check_name}: {c.message}"
+            txt = f"[{c.severity}]  {c.carrier} {c.invoice_number} — {c.check_name}: {c.message}"
             if c.claude_explanation:
                 txt += f"  |  AI: {c.claude_explanation}"
             cell = ws.cell(row=row, column=1, value=txt)
@@ -299,8 +297,7 @@ def _sheet_overview(ws, run_id: str, headers, checks, anomalies, payload: dict,
             ws.row_dimensions[row].height = 30
             row += 1
         for a in warn_anomalies:
-            icon = "✗" if a.severity == "Error" else "⚠"
-            txt = f"{icon}  {a.carrier} {a.invoice_number} — {a.anomaly_type}: {a.description}"
+            txt = f"[{a.severity}]  {a.carrier} {a.invoice_number} — {a.anomaly_type}: {a.description}"
             if a.claude_explanation:
                 txt += f"  |  AI: {a.claude_explanation}"
             cell = ws.cell(row=row, column=1, value=txt)
@@ -315,7 +312,7 @@ def _sheet_overview(ws, run_id: str, headers, checks, anomalies, payload: dict,
             ws.row_dimensions[row].height = 30
             row += 1
         for m in missing_bring:
-            txt = f"⚠  Bring {m.get('invoice_number', '')} — {m.get('message', 'Incomplete document set')}"
+            txt = f"[Warning]  Bring {m.get('invoice_number', '')} — {m.get('message', 'Incomplete document set')}"
             cell = ws.cell(row=row, column=1, value=txt)
             cell.fill = _STATUS_FILL["Warning"]; cell.font = _STATUS_FONT["Warning"]
             cell.border = _BORDER; cell.alignment = Alignment(indent=1)
@@ -391,10 +388,10 @@ def _sheet_invoice_detail(ws, header, lines, checks, anomalies) -> None:
         ("Invoice Date", str(header.invoice_date or "—")),
         ("Total ex VAT", header.total_ex_vat),
         ("Currency", header.currency or "SEK"),
-        ("Status", f"{_STATUS_ICON.get(inv_status, '?')} {inv_status}"),
+        ("Status", inv_status),
     ]
     if recon_check:
-        info_rows.append(("Reconciliation", f"{_STATUS_ICON.get(recon_check.status, '?')} {recon_check.message}"))
+        info_rows.append(("Reconciliation", f"{recon_check.status} — {recon_check.message}"))
 
     for key, val in info_rows:
         k = ws.cell(row=row, column=1, value=key)
@@ -484,8 +481,7 @@ def _sheet_invoice_detail(ws, header, lines, checks, anomalies) -> None:
         row += 1
         first = row
         for c in key_checks:
-            icon = _STATUS_ICON.get(c.status, "?")
-            vals = [c.check_name, f"{icon} {c.status}", c.message,
+            vals = [c.check_name, c.status, c.message,
                     c.claude_explanation or "", "", ""]
             for col, val in enumerate(vals, 1):
                 cell = ws.cell(row=row, column=col, value=val)
@@ -506,7 +502,7 @@ def _sheet_invoice_detail(ws, header, lines, checks, anomalies) -> None:
         row += 1
         first = row
         for a in sorted(anomalies, key=lambda x: {"Error": 0, "Warning": 1, "Info": 2}.get(x.severity, 9)):
-            vals = [f"{_STATUS_ICON.get(a.severity, '?')} {a.severity}",
+            vals = [a.severity,
                     a.anomaly_type, a.description,
                     a.claude_explanation or "", a.suggested_action or "", ""]
             for col, val in enumerate(vals, 1):
@@ -546,7 +542,7 @@ def _sheet_pending(ws, missing: list) -> None:
 
     ws.merge_cells("A1:D1")
     t = ws["A1"]
-    t.value = "⚠ Pending — Incomplete Invoice Sets"
+    t.value = "Pending — Incomplete Invoice Sets"
     t.font = Font(bold=True, size=11, color=_WHITE)
     t.fill = _AMBER
     t.alignment = Alignment(horizontal="left", vertical="center", indent=1)
@@ -711,7 +707,7 @@ def write_missing_file_alert(
 
     ws1.merge_cells("A1:C1")
     t = ws1["A1"]
-    t.value = "⚠ ACTION REQUIRED — Missing Invoice File(s)"
+    t.value = "ACTION REQUIRED — Missing Invoice File(s)"
     t.font = Font(bold=True, size=13, color=_WHITE)
     t.fill = _RED
     t.alignment = Alignment(horizontal="left", vertical="center", indent=1)

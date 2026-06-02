@@ -207,14 +207,14 @@ def write_deterministic_summary(
         for h in headers:
             inv_checks = checks_by_inv.get(h.invoice_number, [])
             if any(c.severity == "Error" for c in inv_checks):
-                icon, overall = "✗", "Error"
+                overall = "Error"
             elif any(c.severity == "Warning" for c in inv_checks):
-                icon, overall = "⚠", "Warning"
+                overall = "Warning"
             else:
-                icon, overall = "✓", "OK"
+                overall = "OK"
             md.append(
                 f"| {h.carrier} | {h.invoice_number} | {h.invoice_date} "
-                f"| {_fmt(h.total_ex_vat)} SEK | {icon} {overall} |"
+                f"| {_fmt(h.total_ex_vat)} SEK | {overall} |"
             )
     md.append("")
 
@@ -230,10 +230,9 @@ def write_deterministic_summary(
             carrier_name = next((c.carrier for c in inv_issues), "")
             md.append(f"### {carrier_name} — {inv_num_key}")
             for c in inv_issues:
-                icon = "✗" if c.severity == "Error" else "⚠"
-                md.append(f"- {icon} **{c.check_name}**: {c.message}")
+                md.append(f"- [{c.severity}] **{c.check_name}**: {c.message}")
                 if c.claude_explanation:
-                    md.append(f"  - _AI: {c.claude_explanation}_")
+                    md.append(f"  - AI: {c.claude_explanation}")
         md.append("")
 
     md.append("## Anomalies")
@@ -241,8 +240,7 @@ def write_deterministic_summary(
         md.append("_No anomalies detected._")
     else:
         for a in anomalies:
-            icon = {"Info": "ℹ", "Warning": "⚠", "Error": "✗"}.get(a.severity, "?")
-            md.append(f"- {icon} **{a.anomaly_type}** ({a.severity}): {a.description}")
+            md.append(f"- [{a.severity}] **{a.anomaly_type}**: {a.description}")
             if a.claude_explanation:
                 md.append(f"  - **AI explanation:** {a.claude_explanation}")
             if a.suggested_action:

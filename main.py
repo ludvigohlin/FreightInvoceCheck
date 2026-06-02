@@ -1,5 +1,5 @@
-"""
-Freight Invoice Control — MVP Entry Point
+﻿"""
+Freight Invoice Control â€” MVP Entry Point
 
 Usage:
     python main.py [--dry-run] [--use-claude] [--move-files]
@@ -22,7 +22,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# ── Bootstrap: ensure src/ is importable when running from project root ───────
+# â”€â”€ Bootstrap: ensure src/ is importable when running from project root â”€â”€â”€â”€â”€â”€â”€
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Reconfigure stdout/stderr to UTF-8 so Unicode log messages print correctly on Windows
@@ -94,20 +94,20 @@ def main():
 
     inbox_dir = Path(args.input_folder) if args.input_folder else config.INBOX_DIR
 
-    # ── Initialise ────────────────────────────────────────────────────────────
+    # â”€â”€ Initialise â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     run_id = generate_run_id()
     scan_ts = datetime.now().isoformat(timespec="seconds")
     config.ensure_all_directories()
 
     logger = ProcessingLogger(run_id)
-    logger.info("Main", f"=== Freight Invoice Control — Run {run_id} ===")
+    logger.info("Main", f"=== Freight Invoice Control â€” Run {run_id} ===")
     logger.info("Main", f"Inbox: {inbox_dir}")
     logger.info("Main", f"Claude API: {'Enabled' if is_claude_enabled() else 'Disabled'}")
 
     if not args.dry_run:
         ensure_all_output_headers()
 
-    # ── Step 1: Scan inbox ────────────────────────────────────────────────────
+    # â”€â”€ Step 1: Scan inbox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     logger.info("Main", "Step 1: Scanning inbox...")
     file_records = scan_inbox(run_id, logger, inbox_dir=inbox_dir)
 
@@ -118,7 +118,7 @@ def main():
         _print_summary(run_id, scan_ts, [], [], [], [], [], logger)
         return
 
-    # ── Step 2: Classify files ────────────────────────────────────────────────
+    # â”€â”€ Step 2: Classify files â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     logger.info("Main", "Step 2: Classifying files...")
     file_records = classify_all(file_records, logger)
 
@@ -128,7 +128,7 @@ def main():
             print(f"  {r.file_name}: {r.detected_carrier} / {r.detected_document_type} / inv={r.detected_invoice_number}")
         return
 
-    # ── Step 3: Parse files by carrier ───────────────────────────────────────
+    # â”€â”€ Step 3: Parse files by carrier â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     logger.info("Main", "Step 3: Parsing files...")
 
     # Group classified files by carrier and document type
@@ -170,7 +170,7 @@ def main():
     service_mapping = config.load_service_mapping()
     surcharge_mapping = config.load_surcharge_mapping()
 
-    # ── Parse Bring PDFs ──────────────────────────────────────────────────────
+    # â”€â”€ Parse Bring PDFs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for rec in bring_pdf_records:
         fp = Path(rec.file_path)
         try:
@@ -189,7 +189,7 @@ def main():
             rec.error_message = str(e)
             logger.error("Main", f"Failed to parse Bring PDF: {e}", file_name=rec.file_name, error=e)
 
-    # ── Parse Bring Excel specifications ─────────────────────────────────────
+    # â”€â”€ Parse Bring Excel specifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for rec in bring_xls_records:
         fp = Path(rec.file_path)
         try:
@@ -213,7 +213,7 @@ def main():
             rec.error_message = str(e)
             logger.error("Main", f"Failed to parse Bring Excel: {e}", file_name=rec.file_name, error=e)
 
-    # ── Parse PostNord PDFs (header + full per-shipment spec) ────────────────
+    # â”€â”€ Parse PostNord PDFs (header + full per-shipment spec) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for rec in postnord_pdf_records:
         fp = Path(rec.file_path)
         try:
@@ -237,7 +237,7 @@ def main():
             rec.error_message = str(e)
             logger.error("Main", f"Failed to parse PostNord PDF: {e}", file_name=rec.file_name, error=e)
 
-    # ── Collect merged Bring invoice headers for output ───────────────────────
+    # â”€â”€ Collect merged Bring invoice headers for output â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     bring_invoice_numbers = set(
         inv for (c, inv) in list(all_pdf_headers.keys()) + list(all_excel_headers.keys())
         if c == "Bring"
@@ -249,12 +249,12 @@ def main():
         xls_h = all_excel_headers.get(("Bring", inv_num))
         lines = all_lines.get(("Bring", inv_num), [])
 
-        # Skip incomplete invoices — both PDF invoice and Excel spec required.
+        # Skip incomplete invoices â€” both PDF invoice and Excel spec required.
         # Incomplete pairs are tracked in missing_bring and sent as a pending-files alert.
         if pdf_h is None or xls_h is None:
             logger.info(
                 "Main",
-                f"Bring invoice {inv_num}: incomplete document set — "
+                f"Bring invoice {inv_num}: incomplete document set â€” "
                 f"skipping dashboard output (see Pending Files alert).",
             )
             continue
@@ -281,11 +281,11 @@ def main():
                 detect_non_nordic_destinations("PostNord", inv_num, pn_lines, logger)
             )
 
-    # ── Step 3c: Unknown carrier — AI extraction ─────────────────────────────
+    # â”€â”€ Step 3c: Unknown carrier â€” AI extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if unknown_carrier_records:
         logger.warning(
             "Main",
-            f"{len(unknown_carrier_records)} file(s) from unknown carrier(s) — "
+            f"{len(unknown_carrier_records)} file(s) from unknown carrier(s) â€” "
             f"attempting AI extraction.",
         )
         for rec in unknown_carrier_records:
@@ -299,7 +299,7 @@ def main():
             if anom:
                 all_anomalies.append(anom)
 
-    # ── Step 3b: Detect incomplete Bring invoices (missing PDF or Excel) ─────
+    # â”€â”€ Step 3b: Detect incomplete Bring invoices (missing PDF or Excel) â”€â”€â”€â”€â”€
     missing_bring = []
     for inv_num in bring_invoice_numbers:
         has_pdf = ("Bring", inv_num) in all_pdf_headers
@@ -332,7 +332,7 @@ def main():
                            f"Bring invoice {inv_num}: Excel specification received but PDF invoice is missing.")
 
 
-    # ── Step 3d: AI classification of unresolved lines ────────────────────────
+    # â”€â”€ Step 3d: AI classification of unresolved lines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if is_claude_enabled():
         unknown_lines = [
             ln for ln in all_invoice_lines
@@ -353,9 +353,9 @@ def main():
                 ln.classification_confidence = float(result.get("confidence", 0.0))
                 ln.manual_review_required = bool(result.get("should_review_manually", True))
         else:
-            logger.info("Main", "Step 3d: All lines classified by rules — no AI needed.")
+            logger.info("Main", "Step 3d: All lines classified by rules â€” no AI needed.")
 
-    # ── Optional: Claude anomaly explanations ─────────────────────────────────
+    # â”€â”€ Optional: Claude anomaly explanations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if is_claude_enabled() and all_anomalies:
         logger.info("Main", "Requesting Claude anomaly explanations...")
         anomaly_dicts = [a.to_dict() for a in all_anomalies]
@@ -367,7 +367,7 @@ def main():
                 e = explanation_map[a.anomaly_type]
                 a.claude_explanation = e.get("explanation", "")
 
-    # ── Step 4: Validation checks ─────────────────────────────────────────────
+    # â”€â”€ Step 4: Validation checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     logger.info("Main", "Step 4: Running validation checks...")
     all_checks = run_all_checks(
         run_id, all_pdf_headers, all_excel_headers, all_lines, logger
@@ -376,7 +376,7 @@ def main():
     # Apply reconciliation status before writing so CSVs have correct values
     _apply_reconciliation_status(all_invoice_headers, all_checks)
 
-    # ── Optional: Claude validation explanations ──────────────────────────────
+    # â”€â”€ Optional: Claude validation explanations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if is_claude_enabled():
         issue_checks = [c for c in all_checks if c.severity in ("Warning", "Error")]
         if issue_checks:
@@ -396,7 +396,7 @@ def main():
                 if explanation:
                     c.claude_explanation = explanation
 
-    # ── Step 5: Write output CSVs (with run-level deduplication) ─────────────
+    # â”€â”€ Step 5: Write output CSVs (with run-level deduplication) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     logger.info("Main", "Step 5: Writing output files...")
     existing_keys = get_existing_invoice_keys()
     write_file_inventory(file_records, logger)
@@ -409,7 +409,7 @@ def main():
     write_anomalies(all_anomalies, logger, skip_keys=existing_keys)
     write_pending_invoices(missing_bring, logger, run_id=run_id)
 
-    # ── Step 6: Generate summaries ────────────────────────────────────────────
+    # â”€â”€ Step 6: Generate summaries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     logger.info("Main", "Step 6: Generating summaries...")
     log_counts = logger.get_counts()
     payload = build_summary_payload(
@@ -427,10 +427,10 @@ def main():
         all_invoice_lines, all_checks, all_anomalies, logger,
     )
 
-    # ── Step 7: Optional AI summary (only when new invoices were written) ────
+    # â”€â”€ Step 7: Optional AI summary (only when new invoices were written) â”€â”€â”€â”€
     ai_text: str | None = None
     if not written_keys:
-        logger.info("Main", "Step 7: Skipped — no new invoices in this run.")
+        logger.info("Main", "Step 7: Skipped â€” no new invoices in this run.")
     elif is_claude_enabled():
         logger.info("Main", "Step 7: Generating AI management summary...")
         ai_text = generate_management_summary(run_id, payload, logger)
@@ -442,7 +442,7 @@ def main():
     else:
         logger.info("Main", "Step 7: Skipped (USE_CLAUDE_API=false).")
 
-    # ── Step 8: Run export + HTML dashboard ──────────────────────────────────
+    # â”€â”€ Step 8: Run export + HTML dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     logger.info("Main", "Step 8: Generating run export and dashboard...")
     if written_keys or missing_bring:
         write_run_export(
@@ -451,10 +451,10 @@ def main():
             missing_bring=missing_bring, all_lines_dict=all_lines,
         )
     else:
-        logger.info("Main", "Step 8: Skipping For_Email export — no new invoices.")
+        logger.info("Main", "Step 8: Skipping For_Email export â€” no new invoices.")
     write_html_dashboard(logger)
 
-    # ── Step 9: Email summary ─────────────────────────────────────────────────
+    # â”€â”€ Step 9: Email summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     xlsx_path = config.FOR_EMAIL_DIR / f"summary_{run_id}.xlsx"
     send_summary_email(
         run_id=run_id,
@@ -465,11 +465,11 @@ def main():
         total_amount=sum(ln.amount or 0.0 for ln in all_invoice_lines),
     )
 
-    # ── File movement (if configured) ─────────────────────────────────────────
+    # â”€â”€ File movement (if configured) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if config.MOVE_FILES_AFTER_PROCESSING:
         _move_processed_files(file_records, logger)
 
-    # ── Final console summary ─────────────────────────────────────────────────
+    # â”€â”€ Final console summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _print_summary(run_id, scan_ts, file_records, all_invoice_headers,
                    all_checks, all_anomalies, all_invoice_lines, logger)
     logger.info("Main", f"Run complete. Deterministic summary: {det_path}")
@@ -509,7 +509,7 @@ def _move_processed_files(file_records, logger):
             target = target_dir / f"{stem}_{rec.run_id}{suffix}"
         try:
             copy2(str(fp), str(target))
-            logger.info("FileMove", f"Copied {fp.name} → {target}", file_name=fp.name)
+            logger.info("FileMove", f"Copied {fp.name} â†’ {target}", file_name=fp.name)
         except Exception as e:
             logger.error("FileMove", f"Failed to copy {fp.name}: {e}", file_name=fp.name, error=e)
 
@@ -523,7 +523,7 @@ def _print_summary(run_id, scan_ts, file_records, headers, checks, anomalies, li
 
     print()
     print("=" * 60)
-    print(f"  Freight Invoice Control — Run Summary")
+    print(f"  Freight Invoice Control â€” Run Summary")
     print(f"  Run ID:      {run_id}")
     print(f"  Files:       {len(file_records)} scanned, {sum(1 for r in file_records if r.processing_status == 'Parsed')} parsed")
     print(f"  Invoices:    {len(headers)} detected")
@@ -539,3 +539,4 @@ def _print_summary(run_id, scan_ts, file_records, headers, checks, anomalies, li
 
 if __name__ == "__main__":
     main()
+

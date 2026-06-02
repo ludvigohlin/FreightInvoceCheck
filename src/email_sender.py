@@ -40,13 +40,13 @@ def send_summary_email(
         err_n  = check_counts.get("Error", 0)
 
         if err_n:
-            status_label = "✗ Action Required"
+            status_label = "Action Required"
             status_color = "#c62828"
         elif warn_n:
-            status_label = "⚠ Review Needed"
+            status_label = "Review Needed"
             status_color = "#e65100"
         else:
-            status_label = "✓ All Clear"
+            status_label = "All Clear"
             status_color = "#2e7d32"
 
         issues = []
