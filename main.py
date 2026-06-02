@@ -448,7 +448,7 @@ def main():
         write_run_export(
             run_id, payload, all_invoice_headers, all_invoice_lines,
             all_checks, logger, ai_summary=ai_text, anomalies=all_anomalies,
-            missing_bring=missing_bring,
+            missing_bring=missing_bring, all_lines_dict=all_lines,
         )
     else:
         logger.info("Main", "Step 8: Skipping For_Email export — no new invoices.")
