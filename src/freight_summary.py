@@ -351,7 +351,7 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
 
     # Column widths: Tjänst | Sändningar | Basfrakt | Bränsle | Övr. tillägg | Total | Snitt inkl. allt
     COLS = ["Tjänst", "Sändningar", "Basfrakt (SEK)", "Bränsle (SEK)",
-            "Övr. tillägg (SEK)", "Total (SEK)", "Snitt inkl. allt (SEK/sändning)"]
+            "Övr. tillägg (SEK)", "Total (SEK)", "Snitt / sändning inkl. allt (SEK)"]
     WIDTHS = [24, 13, 16, 14, 16, 16, 24]
     NC = len(COLS)
 

@@ -132,10 +132,14 @@ def _build_summary_input(
 
         for ln in base_lines:
             cat  = getattr(ln, "service_category", None) or "Unknown"
-            ship = getattr(ln, "shipment_number", None)
-            # Prefix with invoice number so shipments are unique across invoices
+            # Bring uses shipment_number; PostNord uses kolli_id — try both
+            ship = (getattr(ln, "shipment_number", None) or
+                    getattr(ln, "kolli_id", None))
             if ship:
                 svc_agg[(carrier, cat)]["shipments"].add(f"{inv_num}|{ship}")
+            else:
+                # No ID available — count each line as one sändning
+                svc_agg[(carrier, cat)]["shipments"].add(f"{inv_num}|line_{id(ln)}")
             svc_agg[(carrier, cat)]["total"] += getattr(ln, "amount", 0.0) or 0.0
 
     for (carrier, cat), d in sorted(svc_agg.items(), key=lambda x: -x[1]["total"]):
