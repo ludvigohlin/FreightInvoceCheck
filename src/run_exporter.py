@@ -105,63 +105,51 @@ def _build_summary_input(
             status        = inv_status,
         ))
 
-    # ── Services and unallocated ──────────────────────────────────────────────
-    services: list[Service]       = []
+    # ── Services: aggregate across ALL invoices per (carrier, service_category) ─
+    # Aggregating per-invoice creates duplicate rows when a carrier has multiple
+    # invoices. Shipment IDs are prefixed with invoice number to avoid collisions.
+    services: list[Service]        = []
     unallocated: list[Unallocated] = []
 
-    for h in headers:
-        inv_lines = []
-        if all_lines_dict:
-            inv_lines = all_lines_dict.get((h.carrier, h.invoice_number), [])
-        else:
-            inv_lines = [
-                ln for ln in lines
-                if getattr(ln, "invoice_number", None) == h.invoice_number
-                or getattr(ln, "invoice_number_col", None) == h.invoice_number
-            ]
+    svc_agg: dict = defaultdict(lambda: {"shipments": set(), "total": 0.0})
 
+    # Headers with 0 parseable lines → unallocated
+    header_map = {(h.carrier, h.invoice_number): h for h in headers}
+    line_source = all_lines_dict or {}
+
+    for (carrier, inv_num), inv_lines in line_source.items():
         base_lines = [ln for ln in inv_lines if getattr(ln, "line_type", "") == "BaseFreight"]
-        base_total = sum(getattr(ln, "amount", 0.0) or 0.0 for ln in base_lines)
 
-        if not base_lines and (h.total_ex_vat or 0.0) > 0:
-            # Invoice with no parseable lines — mark as unallocated
-            inv_checks = checks_by_inv.get(h.invoice_number, [])
-            recon_chk = next(
-                (c for c in inv_checks
-                 if c.check_name in ("PDFTotalVsExcelSummary", "LineSumVsHeaderTotal")), None
-            )
-            label = "Ej specificerat (otolkad faktura)"
-            if recon_chk and recon_chk.claude_explanation:
-                label = f"Ej specificerat — {recon_chk.claude_explanation}"
-            unallocated.append(Unallocated(
-                carrier = h.carrier,
-                label   = label,
-                amount  = h.total_ex_vat or 0.0,
-            ))
+        if not base_lines:
+            h = header_map.get((carrier, inv_num))
+            if h and (h.total_ex_vat or 0.0) > 0:
+                unallocated.append(Unallocated(
+                    carrier = carrier,
+                    label   = f"Ej specificerat – faktura {inv_num}",
+                    amount  = h.total_ex_vat or 0.0,
+                ))
             continue
 
-        # Aggregate base freight by service category
-        svc_data: dict = defaultdict(lambda: {"shipments": set(), "total": 0.0})
         for ln in base_lines:
             cat  = getattr(ln, "service_category", None) or "Unknown"
             ship = getattr(ln, "shipment_number", None)
+            # Prefix with invoice number so shipments are unique across invoices
             if ship:
-                svc_data[cat]["shipments"].add(ship)
-            svc_data[cat]["total"] += getattr(ln, "amount", 0.0) or 0.0
+                svc_agg[(carrier, cat)]["shipments"].add(f"{inv_num}|{ship}")
+            svc_agg[(carrier, cat)]["total"] += getattr(ln, "amount", 0.0) or 0.0
 
-        for cat, d in sorted(svc_data.items(), key=lambda x: -x[1]["total"]):
-            n_ship = len(d["shipments"]) or len([
-                ln for ln in base_lines
-                if (getattr(ln, "service_category", None) or "Unknown") == cat
-            ])
-            services.append(Service(
-                carrier      = h.carrier,
-                service_name = _SVC_LABEL.get(cat, cat),
-                shipments    = n_ship,
-                total_ex_vat = round(d["total"], 2),
-            ))
+    for (carrier, cat), d in sorted(svc_agg.items(), key=lambda x: -x[1]["total"]):
+        services.append(Service(
+            carrier      = carrier,
+            service_name = _SVC_LABEL.get(cat, cat),
+            shipments    = len(d["shipments"]),
+            total_ex_vat = round(d["total"], 2),
+        ))
 
-        # Reconciliation gap → unallocated
+    # Reconciliation gaps (invoices where line sum ≠ header total) → unallocated
+    for h in headers:
+        if not line_source.get((h.carrier, h.invoice_number)):
+            continue  # already handled above
         inv_checks = checks_by_inv.get(h.invoice_number, [])
         recon_chk = next(
             (c for c in inv_checks
@@ -176,7 +164,7 @@ def _build_summary_input(
             if abs(gap) > 0.005:
                 unallocated.append(Unallocated(
                     carrier = h.carrier,
-                    label   = f"Avstämningsdifferens ({recon_chk.message})",
+                    label   = f"Avstämningsdifferens – faktura {h.invoice_number}",
                     amount  = round(abs(gap), 2),
                 ))
 
