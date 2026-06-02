@@ -197,7 +197,7 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
     ws = wb.active
     ws.title = "Attest"
     ws.sheet_view.showGridLines = False
-    for i, w in enumerate([22, 10, 16, 14, 14, 14, 14, 10], 1):
+    for i, w in enumerate([20, 16, 13, 18, 14, 12, 12, 48], 1):
         ws.column_dimensions[_scol(i)].width = w
 
     # Title
@@ -308,7 +308,7 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
            align="center", border=_box, fmt=_INT)
         _c(ws, r, 7, inv.status,      bold=True, align="center", fill=sf, color=st, border=_box)
         note = "" if inv.status == "OK" else inv.recon_message
-        _c(ws, r, 8, note,            size=9, color=_GREY, wrap=True, border=_box)
+        _c(ws, r, 8, note,            size=9, color=_GREY, border=_box)
         r += 1
     _c(ws, r, 1, "TOTAL", bold=True, fill=_SUB_F, border=_box)
     _c(ws, r, 2, "", fill=_SUB_F, border=_box)
