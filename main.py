@@ -540,3 +540,4 @@ def _print_summary(run_id, scan_ts, file_records, headers, checks, anomalies, li
 if __name__ == "__main__":
     main()
 
+
