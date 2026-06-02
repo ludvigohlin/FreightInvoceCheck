@@ -107,6 +107,17 @@ class Anomaly:
 
 
 @dataclass
+class ServiceSurcharge:
+    """Surcharge amount tied to a specific service type (for per-service breakdown)."""
+    carrier: str
+    service_name: str               # matches Service.service_name
+    surcharge_name: str             # e.g. "Bränsle (fuel)"
+    amount: float
+    is_fuel: bool
+    is_unknown: bool
+
+
+@dataclass
 class SummaryInput:
     run_id: str
     generated: str                  # "YYYY-MM-DD HH:MM"
@@ -116,6 +127,7 @@ class SummaryInput:
     surcharges: list[Surcharge]
     anomalies: list[Anomaly]
     unallocated: list[Unallocated] = field(default_factory=list)
+    service_surcharges: list[ServiceSurcharge] = field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -335,62 +347,77 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
     ws = wb.create_sheet("Kostnad per tjänst")
     ws.sheet_view.showGridLines = False
     _c(ws, 1, 1, "Kostnad per tjänst – per leverantör", bold=True, size=14, color=_NAVY)
-    _c(ws, 2, 1,
-       "Beloppen avser basfrakt exkl. tillägg. "
-       "Bryggan i botten visar hur frakt + tillägg = fakturatotal per leverantör.",
-       size=9, color=_GREY)
+    _c(ws, 2, 1, "Basfrakt och tillägg per tjänstetyp.", size=9, color=_GREY)
     _hdr(ws, 4,
-         ["Leverantör", "Tjänst", "Sändningar", "Frakt ex moms (SEK)", "Snitt / sändning",
-          "Andel av leverantörs frakt"],
-         widths=[20, 30, 14, 20, 18, 24])
+         ["Leverantör", "Tjänst", "Kostnadsslag", "Sändningar",
+          "Belopp ex moms (SEK)", "Andel av leverantörstotal"],
+         widths=[18, 22, 22, 14, 20, 24])
     r = 5
     for c in carriers:
         cf = _carrier_fill(c)
-        rows = [(s.service_name, s.shipments, s.total_ex_vat)
-                for s in d.services if s.carrier == c]
-        rows += [(u.label, None, u.amount)
-                 for u in d.unallocated if u.carrier == c]
-        start = r
-        for name, ships, amt in rows:
-            _c(ws, r, 1, c,     fill=cf, border=_box)
-            _c(ws, r, 2, name,  border=_box, size=9)
-            _c(ws, r, 3, ships, align="center", border=_box, fmt=_INT)
-            _c(ws, r, 4, amt,   align="right", border=_box, fmt=_SEK)
-            if ships:
-                _c(ws, r, 5, f"=IF(C{r}=0,\"-\",D{r}/C{r})", align="right", border=_box, fmt=_SEK)
-            else:
-                _c(ws, r, 5, "–", align="right", border=_box)
-            _c(ws, r, 6, None, align="center", border=_box, fmt=_PCT)
+        ct = carrier_totals[c]
+
+        # Index service surcharges by service_name for this carrier
+        svc_sc: dict[str, list] = {}
+        for sc in d.service_surcharges:
+            if sc.carrier == c:
+                svc_sc.setdefault(sc.service_name, []).append(sc)
+
+        for svc in [s for s in d.services if s.carrier == c]:
+            surcs = sorted(svc_sc.get(svc.service_name, []), key=lambda x: -x.amount)
+            grp_start = r
+
+            # Base freight row
+            _c(ws, r, 1, c,               fill=cf, border=_box)
+            _c(ws, r, 2, svc.service_name, bold=True, fill=cf, border=_box)
+            _c(ws, r, 3, "Basfrakt",       fill=cf, border=_box)
+            _c(ws, r, 4, svc.shipments,    align="center", fill=cf, border=_box, fmt=_INT)
+            _c(ws, r, 5, svc.total_ex_vat, align="right",  fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 6, f"=E{r}/{ct}",    align="right",  border=_box, fmt=_PCT)
             r += 1
-        sub = r
-        _c(ws, sub, 1, f"{c} – frakt subtotal", bold=True, fill=_SUB_F, border=_box)
-        _c(ws, sub, 2, "", fill=_SUB_F, border=_box)
-        _c(ws, sub, 3, f"=SUM(C{start}:C{sub-1})", bold=True, align="center", fill=_SUB_F, border=_box, fmt=_INT)
-        _c(ws, sub, 4, f"=SUM(D{start}:D{sub-1})", bold=True, align="right",  fill=_SUB_F, border=_box, fmt=_SEK)
-        _c(ws, sub, 5, "", fill=_SUB_F, border=_box)
-        _c(ws, sub, 6, f"=D{sub}/D{sub}", bold=True, align="center", fill=_SUB_F, border=_box, fmt=_PCT)
-        for rr in range(start, sub):
-            ws.cell(row=rr, column=6).value = f"=D{rr}/$D${sub}"
-        bridge = sub + 1
-        _c(ws, bridge, 1, f"{c} – tillägg (se fliken Tillägg)",
-           italic=True, fill=_AI_F, color=_GREY, border=_box)
-        for col in (2, 3):
-            _c(ws, bridge, col, "", fill=_AI_F, border=_box)
-        _c(ws, bridge, 4, carrier_fuel[c] + carrier_other[c],
-           italic=True, align="right", fill=_AI_F, color=_GREY, border=_box, fmt=_SEK)
-        _c(ws, bridge, 5, "", fill=_AI_F, border=_box)
-        _c(ws, bridge, 6, f"=D{bridge}/{carrier_totals[c]}",
-           italic=True, align="center", fill=_AI_F, color=_GREY, border=_box, fmt=_PCT)
-        total_r = sub + 2
-        _c(ws, total_r, 1, f"{c} – TOTAL (frakt + tillägg = fakturatotal)",
-           bold=True, fill=_NAVY, color=_HDR_T, border=_box)
+
+            # One row per surcharge type
+            for sc in surcs:
+                sc_f = _ERR_F if sc.is_unknown else (_WARN_F if sc.is_fuel else None)
+                _c(ws, r, 1, "",             fill=cf, border=_box)
+                _c(ws, r, 2, svc.service_name, fill=cf, border=_box, size=9, color=_GREY)
+                _c(ws, r, 3, sc.surcharge_name, fill=sc_f, border=_box, size=9)
+                _c(ws, r, 4, "",             border=_box)
+                _c(ws, r, 5, sc.amount,      align="right", fill=sc_f, border=_box, fmt=_SEK)
+                _c(ws, r, 6, f"=E{r}/{ct}", align="right", border=_box, fmt=_PCT)
+                r += 1
+
+            # Subtotal row for this service (only if surcharges exist)
+            if surcs:
+                _c(ws, r, 1, "",                             fill=_SUB_F, border=_box)
+                _c(ws, r, 2, f"{svc.service_name} – totalt", bold=True, fill=_SUB_F, border=_box)
+                _c(ws, r, 3, "",                             fill=_SUB_F, border=_box)
+                _c(ws, r, 4, svc.shipments,                  align="center", fill=_SUB_F, border=_box, fmt=_INT)
+                _c(ws, r, 5, f"=SUM(E{grp_start}:E{r-1})",  bold=True, align="right",
+                   fill=_SUB_F, border=_box, fmt=_SEK)
+                _c(ws, r, 6, f"=E{r}/{ct}",                  bold=True, align="right",
+                   fill=_SUB_F, border=_box, fmt=_PCT)
+                r += 1
+            r += 1  # spacer between services
+
+        # Unallocated rows
+        for u in [u for u in d.unallocated if u.carrier == c]:
+            _c(ws, r, 1, c,        fill=cf, border=_box)
+            _c(ws, r, 2, u.label,  fill=cf, border=_box, size=9)
+            _c(ws, r, 3, "Ej specificerat", fill=cf, border=_box, size=9, color=_GREY)
+            _c(ws, r, 4, "",       border=_box)
+            _c(ws, r, 5, u.amount, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 6, f"=E{r}/{ct}", align="right", border=_box, fmt=_PCT)
+            r += 1
+
+        # Carrier total
+        _c(ws, r, 1, f"{c} – TOTAL", bold=True, fill=_NAVY, color=_HDR_T, border=_box)
         for col in range(2, 6):
-            _c(ws, total_r, col, "", fill=_NAVY, border=_box)
-        _c(ws, total_r, 4, f"=D{sub}+D{bridge}",
-           bold=True, align="right", fill=_NAVY, color=_HDR_T, border=_box, fmt=_SEK)
-        _c(ws, total_r, 5, "", fill=_NAVY, border=_box)
-        _c(ws, total_r, 6, "", fill=_NAVY, border=_box)
-        r = sub + 4
+            _c(ws, r, col, "", fill=_NAVY, border=_box)
+        _c(ws, r, 5, ct,    bold=True, align="right", fill=_NAVY, color=_HDR_T, border=_box, fmt=_SEK)
+        _c(ws, r, 6, "100%", bold=True, align="right", fill=_NAVY, color=_HDR_T, border=_box)
+        r += 2
+
     ws.freeze_panes = "A5"
 
 

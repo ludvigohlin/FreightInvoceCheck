@@ -11,7 +11,7 @@ from src import config
 from src.processing_logger import ProcessingLogger
 from src.freight_summary import (
     build_summary, SummaryInput,
-    Invoice, Service, Surcharge, Anomaly as SummaryAnomaly, Unallocated,
+    Invoice, Service, Surcharge, Anomaly as SummaryAnomaly, Unallocated, ServiceSurcharge,
 )
 
 
@@ -74,10 +74,16 @@ def _build_summary_input(
             (c for c in inv_checks
              if c.check_name in ("PDFTotalVsExcelSummary", "LineSumVsHeaderTotal")), None
         )
-        recon_status  = recon_chk.status if recon_chk else "OK"
-        recon_msg     = recon_chk.message if recon_chk else ""
-        if recon_chk and recon_chk.claude_explanation:
-            recon_msg = f"{recon_msg} — {recon_chk.claude_explanation}"
+        recon_status = recon_chk.status if recon_chk else "OK"
+        # Short "Att kolla" text — just the key fact, no AI prose
+        if not recon_chk or recon_chk.status == "OK":
+            recon_msg = ""
+        elif "no lines" in recon_chk.message.lower() or "0.00" in recon_chk.actual_value:
+            recon_msg = "Inga rader tolkade"
+        elif recon_chk.difference:
+            recon_msg = f"Differens: {recon_chk.difference} SEK"
+        else:
+            recon_msg = recon_chk.message[:60]
 
         n_err_check  = sum(1 for c in inv_checks if c.severity == "Error")
         n_warn_check = sum(1 for c in inv_checks if c.severity == "Warning")
@@ -174,30 +180,40 @@ def _build_summary_input(
                     amount  = round(abs(gap), 2),
                 ))
 
-    # ── Surcharges ────────────────────────────────────────────────────────────
+    # ── Surcharges (carrier-level for Tillägg tab) + per-service for Kostnad tab ──
     surcharges: list[Surcharge] = []
-    sc_data: dict = defaultdict(float)  # (carrier, cat) -> total
-    for ln in lines:
-        if getattr(ln, "line_type", "") != "Surcharge":
-            continue
-        carrier = getattr(ln, "carrier", None)
-        if not carrier:
-            # Infer carrier from invoice number
-            inv_num = (getattr(ln, "invoice_number", None)
-                       or getattr(ln, "invoice_number_col", None))
-            carrier = next(
-                (h.carrier for h in headers if h.invoice_number == inv_num), "Unknown"
-            )
-        cat = getattr(ln, "surcharge_category", None) or "Unknown"
-        sc_data[(carrier, cat)] += getattr(ln, "amount", 0.0) or 0.0
+    service_surcharges: list[ServiceSurcharge] = []
 
-    for (carrier, cat), total in sorted(sc_data.items(), key=lambda x: -x[1]):
+    sc_carrier: dict = defaultdict(float)        # (carrier, sc_cat) -> total
+    sc_service: dict = defaultdict(float)        # (carrier, svc_cat, sc_cat) -> total
+
+    for (carrier, inv_num), inv_lines in (all_lines_dict or {}).items():
+        for ln in inv_lines:
+            if getattr(ln, "line_type", "") != "Surcharge":
+                continue
+            sc_cat  = getattr(ln, "surcharge_category", None) or "Unknown"
+            svc_cat = getattr(ln, "service_category",   None) or "Unknown"
+            amt     = getattr(ln, "amount", 0.0) or 0.0
+            sc_carrier[(carrier, sc_cat)]           += amt
+            sc_service[(carrier, svc_cat, sc_cat)]  += amt
+
+    for (carrier, cat), total in sorted(sc_carrier.items(), key=lambda x: -x[1]):
         surcharges.append(Surcharge(
             carrier    = carrier,
             name       = _SC_LABEL.get(cat, cat),
             amount     = round(total, 2),
             is_fuel    = cat == "Fuel",
             is_unknown = cat == "Unknown",
+        ))
+
+    for (carrier, svc_cat, sc_cat), total in sorted(sc_service.items(), key=lambda x: -x[1]):
+        service_surcharges.append(ServiceSurcharge(
+            carrier       = carrier,
+            service_name  = _SVC_LABEL.get(svc_cat, svc_cat),
+            surcharge_name= _SC_LABEL.get(sc_cat, sc_cat),
+            amount        = round(total, 2),
+            is_fuel       = sc_cat == "Fuel",
+            is_unknown    = sc_cat == "Unknown",
         ))
 
     # ── Anomalies ─────────────────────────────────────────────────────────────
@@ -248,14 +264,15 @@ def _build_summary_input(
         ))
 
     return SummaryInput(
-        run_id        = run_id,
-        generated     = datetime.now().strftime("%Y-%m-%d %H:%M"),
-        files_scanned = payload.get("total_files_scanned", 0),
-        invoices      = invoices,
-        services      = services,
-        surcharges    = surcharges,
-        anomalies     = summary_anomalies,
-        unallocated   = unallocated,
+        run_id             = run_id,
+        generated          = datetime.now().strftime("%Y-%m-%d %H:%M"),
+        files_scanned      = payload.get("total_files_scanned", 0),
+        invoices           = invoices,
+        services           = services,
+        surcharges         = surcharges,
+        anomalies          = summary_anomalies,
+        unallocated        = unallocated,
+        service_surcharges = service_surcharges,
     )
 
 
