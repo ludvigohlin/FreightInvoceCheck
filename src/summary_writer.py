@@ -132,12 +132,6 @@ def write_deterministic_summary(
     error_checks = [c for c in checks if c.severity == "Error"]
     warn_checks = [c for c in checks if c.severity == "Warning"]
 
-    # Reconciliation result
-    recon_check = next(
-        (c for c in checks if c.check_name == "PDFTotalVsExcelSummary"), None
-    )
-    recon_result = recon_check.status if recon_check else "N/A"
-
     md = []
     md.append(f"# Freight Invoice Reconciliation — Run {run_id}")
     md.append("")
@@ -158,16 +152,6 @@ def write_deterministic_summary(
         for r in file_records:
             md.append(f"| {r.file_name} | {r.detected_carrier} | {r.detected_document_type} | {r.detected_invoice_number or '—'} | {r.processing_status} |")
         md.append("")
-
-    md.append("## Detected Invoices")
-    if not headers:
-        md.append("_No invoice headers extracted._")
-    else:
-        md.append("| Carrier | Invoice# | Date | Total ex VAT | Currency | Type |")
-        md.append("|---------|----------|------|-------------|----------|------|")
-        for h in headers:
-            md.append(f"| {h.carrier} | {h.invoice_number} | {h.invoice_date} | {_fmt(h.total_ex_vat)} | {h.currency} | {h.document_type} |")
-    md.append("")
 
     md.append("## Carrier Summary")
     for carrier, info in payload["carrier_totals"].items():
@@ -204,26 +188,51 @@ def write_deterministic_summary(
         md.append("_No surcharge data._")
     md.append("")
 
-    md.append("## Reconciliation Result")
-    if recon_check:
-        status_icon = {"OK": "✓", "Warning": "⚠", "Error": "✗"}.get(recon_result, "?")
-        md.append(f"**{status_icon} {recon_result}** — {recon_check.message}")
-    else:
-        md.append("_Reconciliation check not performed (missing PDF or Excel)._")
+    # ── Per-invoice status table ──────────────────────────────────────────────
+    md.append("## Invoice Status")
+    ok_n = payload['check_counts'].get('OK', 0)
+    warn_n = payload['check_counts'].get('Warning', 0)
+    err_n = payload['check_counts'].get('Error', 0)
+    md.append(f"Checks: {ok_n} OK · {warn_n} Warning · {err_n} Error")
+    md.append("")
+    if headers:
+        # Group checks by invoice number
+        from collections import defaultdict as _dd
+        checks_by_inv = _dd(list)
+        for c in checks:
+            checks_by_inv[c.invoice_number].append(c)
+
+        md.append("| Carrier | Invoice# | Date | Total ex VAT | Overall |")
+        md.append("|---------|----------|------|-------------|---------|")
+        for h in headers:
+            inv_checks = checks_by_inv.get(h.invoice_number, [])
+            if any(c.severity == "Error" for c in inv_checks):
+                icon, overall = "✗", "Error"
+            elif any(c.severity == "Warning" for c in inv_checks):
+                icon, overall = "⚠", "Warning"
+            else:
+                icon, overall = "✓", "OK"
+            md.append(
+                f"| {h.carrier} | {h.invoice_number} | {h.invoice_date} "
+                f"| {_fmt(h.total_ex_vat)} SEK | {icon} {overall} |"
+            )
     md.append("")
 
-    md.append("## Validation Checks")
-    md.append(f"- OK: {payload['check_counts'].get('OK', 0)}")
-    md.append(f"- Warnings: {payload['check_counts'].get('Warning', 0)}")
-    md.append(f"- Errors: {payload['check_counts'].get('Error', 0)}")
-    md.append("")
-    if checks:
-        md.append("| Check | Status | Message |")
-        md.append("|-------|--------|---------|")
-        for c in checks:
-            icon = {"OK": "✓", "Warning": "⚠", "Error": "✗"}.get(c.status, "?")
-            md.append(f"| {c.check_name} | {icon} {c.status} | {c.message} |")
-    md.append("")
+    # ── Issues only (errors + warnings) ──────────────────────────────────────
+    issue_checks = [c for c in checks if c.severity in ("Error", "Warning")]
+    if issue_checks:
+        md.append("## Issues Requiring Attention")
+        from collections import defaultdict as _dd2
+        by_inv = _dd2(list)
+        for c in issue_checks:
+            by_inv[c.invoice_number].append(c)
+        for inv_num_key, inv_issues in sorted(by_inv.items()):
+            carrier_name = next((c.carrier for c in inv_issues), "")
+            md.append(f"### {carrier_name} — {inv_num_key}")
+            for c in inv_issues:
+                icon = "✗" if c.severity == "Error" else "⚠"
+                md.append(f"- {icon} **{c.check_name}**: {c.message}")
+        md.append("")
 
     md.append("## Anomalies")
     if not anomalies:

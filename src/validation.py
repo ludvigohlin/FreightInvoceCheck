@@ -313,6 +313,15 @@ def run_postnord_checks(
             f"{expected:.2f}", f"{line_sum:.2f}", f"{diff:+.2f}",
             status, severity, msg, source,
         ))
+    elif header.total_ex_vat is not None and not lines and header.total_ex_vat > 0:
+        checks.append(_make_check(
+            run_id, carrier, inv_num, "LineSumVsHeaderTotal",
+            f"{header.total_ex_vat:.2f}", "0.00", f"{-header.total_ex_vat:.2f}",
+            "Warning", "Warning",
+            f"No lines could be parsed from this invoice (header total: {header.total_ex_vat:.2f} SEK). "
+            f"May be a supplement or adjustment invoice — verify manually.",
+            source,
+        ))
 
     # Check 3: Mandatory header fields
     mandatory = rules.get("mandatory_header_fields", {})
