@@ -111,7 +111,7 @@ def _build_summary_input(
     services: list[Service]        = []
     unallocated: list[Unallocated] = []
 
-    svc_agg: dict = defaultdict(lambda: {"shipments": set(), "total": 0.0})
+    svc_agg: dict = defaultdict(lambda: {"shipments": set(), "total": 0.0, "lines": 0})
 
     # Headers with 0 parseable lines → unallocated
     header_map = {(h.carrier, h.invoice_number): h for h in headers}
@@ -141,6 +141,7 @@ def _build_summary_input(
                 # No ID available — count each line as one sändning
                 svc_agg[(carrier, cat)]["shipments"].add(f"{inv_num}|line_{id(ln)}")
             svc_agg[(carrier, cat)]["total"] += getattr(ln, "amount", 0.0) or 0.0
+            svc_agg[(carrier, cat)]["lines"] += 1
 
     for (carrier, cat), d in sorted(svc_agg.items(), key=lambda x: -x[1]["total"]):
         services.append(Service(
@@ -148,6 +149,7 @@ def _build_summary_input(
             service_name = _SVC_LABEL.get(cat, cat),
             shipments    = len(d["shipments"]),
             total_ex_vat = round(d["total"], 2),
+            packages     = d["lines"],
         ))
 
     # Reconciliation gaps (invoices where line sum ≠ header total) → unallocated

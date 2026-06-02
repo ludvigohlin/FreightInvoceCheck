@@ -70,8 +70,9 @@ class Service:
     """Base freight costs, excluding surcharges."""
     carrier: str
     service_name: str               # e.g. "Kolli (parcel)", "Pall (pallet)"
-    shipments: int                  # number of shipments billed on this service
+    shipments: int                  # number of distinct sändningar (deliveries)
     total_ex_vat: float
+    packages: int = 0               # total kolli/lines (for Bring: > shipments when multi-kolli orders)
 
 
 @dataclass
@@ -350,9 +351,12 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
     _c(ws, 2, 1, "En rad per tjänstetyp. Tillägg fördelade per tjänst.", size=9, color=_GREY)
 
     # Column widths: Tjänst | Sändningar | Basfrakt | Bränsle | Övr. tillägg | Total | Snitt inkl. allt
-    COLS = ["Tjänst", "Sändningar", "Basfrakt (SEK)", "Bränsle (SEK)",
-            "Övr. tillägg (SEK)", "Total (SEK)", "Snitt / sändning inkl. allt (SEK)"]
-    WIDTHS = [24, 13, 16, 14, 16, 16, 24]
+    # Columns: Tjänst | Sändningar | Kolli* | Basfrakt | Bränsle | Övr. tillägg | Total | Snitt/sändning | Snitt/kolli*
+    # * Bring only: kolli ≠ sändningar (en sändning kan ha flera kolli)
+    # For PostNord: kolli = sändningar (each line = one shipment)
+    COLS = ["Tjänst", "Sändningar", "Kolli", "Basfrakt (SEK)", "Bränsle (SEK)",
+            "Övr. tillägg (SEK)", "Total (SEK)", "Snitt / sändning (SEK)", "Snitt / kolli (SEK)"]
+    WIDTHS = [24, 12, 10, 16, 14, 16, 16, 20, 18]
     NC = len(COLS)
 
     r = 4
@@ -360,7 +364,7 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
         cf = _carrier_fill(c)
         ct = carrier_totals[c]
 
-        # Index service surcharges for this carrier
+        # Index service-level surcharges (those that could be attributed to a service type)
         svc_fuel: dict[str, float] = {}
         svc_other: dict[str, float] = {}
         for sc in d.service_surcharges:
@@ -370,6 +374,12 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
                 svc_fuel[sc.service_name]  = svc_fuel.get(sc.service_name, 0.0)  + sc.amount
             else:
                 svc_other[sc.service_name] = svc_other.get(sc.service_name, 0.0) + sc.amount
+
+        # Unattributed surcharges (invoice-level, no service linkage — typical for PostNord fuel)
+        attributed_fuel  = sum(svc_fuel.values())
+        attributed_other = sum(svc_other.values())
+        unattr_fuel  = round(carrier_fuel.get(c, 0.0)  - attributed_fuel,  2)
+        unattr_other = round(carrier_other.get(c, 0.0) - attributed_other, 2)
 
         # Carrier banner
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=NC)
@@ -385,44 +395,64 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
 
         data_start = r
         for svc in [s for s in d.services if s.carrier == c]:
-            fuel  = svc_fuel.get(svc.service_name, 0.0)
-            other = svc_other.get(svc.service_name, 0.0)
-            total = svc.total_ex_vat + fuel + other
-            avg   = total / svc.shipments if svc.shipments else 0.0
+            fuel   = svc_fuel.get(svc.service_name, 0.0)
+            other  = svc_other.get(svc.service_name, 0.0)
+            total  = svc.total_ex_vat + fuel + other
+            kolli  = svc.packages if svc.packages else svc.shipments
+            avg_s  = total / svc.shipments if svc.shipments else 0.0
+            avg_k  = total / kolli         if kolli         else 0.0
 
             _c(ws, r, 1, svc.service_name, fill=cf, border=_box)
             _c(ws, r, 2, svc.shipments,    align="right", fill=cf, border=_box, fmt=_INT)
-            _c(ws, r, 3, svc.total_ex_vat, align="right", fill=cf, border=_box, fmt=_SEK)
-            _c(ws, r, 4, fuel  if fuel  else None, align="right", fill=cf, border=_box, fmt=_SEK)
-            _c(ws, r, 5, other if other else None, align="right", fill=cf, border=_box, fmt=_SEK)
-            _c(ws, r, 6, total,            align="right", fill=cf, border=_box, fmt=_SEK, bold=True)
-            _c(ws, r, 7, avg if svc.shipments else None,
+            _c(ws, r, 3, kolli if kolli != svc.shipments else None,
+               align="right", fill=cf, border=_box, fmt=_INT)
+            _c(ws, r, 4, svc.total_ex_vat, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 5, fuel  if fuel  else None, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 6, other if other else None, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 7, total,            align="right", fill=cf, border=_box, fmt=_SEK, bold=True)
+            _c(ws, r, 8, avg_s if svc.shipments else None, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 9, avg_k if (kolli and kolli != svc.shipments) else None,
                align="right", fill=cf, border=_box, fmt=_SEK)
+            r += 1
+
+        # Invoice-level (unattributed) surcharges — shown as separate row
+        if unattr_fuel > 0.01 or unattr_other > 0.01:
+            _c(ws, r, 1, "Generella tillägg (fakturanivå)",
+               fill=_AI_F, color=_GREY, border=_box, size=9, italic=True)
+            for col in (2, 3, 4):
+                _c(ws, r, col, None, fill=_AI_F, border=_box)
+            _c(ws, r, 5, unattr_fuel  if unattr_fuel  > 0.01 else None,
+               align="right", fill=_AI_F, border=_box, fmt=_SEK, italic=True)
+            _c(ws, r, 6, unattr_other if unattr_other > 0.01 else None,
+               align="right", fill=_AI_F, border=_box, fmt=_SEK, italic=True)
+            _c(ws, r, 7, unattr_fuel + unattr_other,
+               align="right", fill=_AI_F, border=_box, fmt=_SEK, italic=True)
+            for col in (8, 9):
+                _c(ws, r, col, None, fill=_AI_F, border=_box)
             r += 1
 
         # Unallocated rows (e.g. unparsed supplement invoices)
         for u in [u for u in d.unallocated if u.carrier == c]:
             _c(ws, r, 1, u.label, fill=cf, border=_box, size=9, color=_GREY)
-            for col in (2, 3, 4, 5):
+            for col in (2, 3, 4, 5, 6):
                 _c(ws, r, col, None, border=_box)
-            _c(ws, r, 6, u.amount, align="right", fill=cf, border=_box, fmt=_SEK)
-            _c(ws, r, 7, None, border=_box)
+            _c(ws, r, 7, u.amount, align="right", fill=cf, border=_box, fmt=_SEK)
+            for col in (8, 9):
+                _c(ws, r, col, None, border=_box)
             r += 1
 
         # Totals row
         _c(ws, r, 1, "TOTAL", bold=True, fill=_SUB_F, border=_box)
         _c(ws, r, 2, f"=SUM(B{data_start}:B{r-1})", bold=True, align="right",
            fill=_SUB_F, border=_box, fmt=_INT)
-        _c(ws, r, 3, f"=SUM(C{data_start}:C{r-1})", bold=True, align="right",
+        for col in (3,):
+            _c(ws, r, col, None, fill=_SUB_F, border=_box)
+        for col, letter in [(4, "D"), (5, "E"), (6, "F"), (7, "G")]:
+            _c(ws, r, col, f"=SUM({letter}{data_start}:{letter}{r-1})", bold=True,
+               align="right", fill=_SUB_F, border=_box, fmt=_SEK)
+        _c(ws, r, 8, f"=IF(B{r}>0,G{r}/B{r},\"\")", bold=True, align="right",
            fill=_SUB_F, border=_box, fmt=_SEK)
-        _c(ws, r, 4, f"=SUM(D{data_start}:D{r-1})", bold=True, align="right",
-           fill=_SUB_F, border=_box, fmt=_SEK)
-        _c(ws, r, 5, f"=SUM(E{data_start}:E{r-1})", bold=True, align="right",
-           fill=_SUB_F, border=_box, fmt=_SEK)
-        _c(ws, r, 6, f"=SUM(F{data_start}:F{r-1})", bold=True, align="right",
-           fill=_SUB_F, border=_box, fmt=_SEK)
-        _c(ws, r, 7, f"=IF(B{r}>0,F{r}/B{r},\"\")", bold=True, align="right",
-           fill=_SUB_F, border=_box, fmt=_SEK)
+        _c(ws, r, 9, None, fill=_SUB_F, border=_box)
         r += 2
 
     ws.freeze_panes = "A4"
