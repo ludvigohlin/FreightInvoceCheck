@@ -446,12 +446,14 @@ def parse_bring_excel_specification(
         document_type="Specification",
     )
 
+    # Read all rows into memory once — ws.cell() on a read_only workbook is O(n²),
+    # iter_rows(values_only=True) streams the XML in one pass.
+    all_rows = [list(row) for row in ws.iter_rows(values_only=True)]
+    wb.close()
+
     # ── Pass 1: Extract summary header fields from top rows ───────────────────
-    # Read all columns so we can detect the data header row (Artikelnummer is col 5, Avtalspris col 13)
-    max_col = ws.max_column or 17
     header_row_idx = None
-    for row_idx in range(1, 25):
-        row_vals_all = [ws.cell(row=row_idx, column=c).value for c in range(1, max_col + 1)]
+    for row_idx, row_vals_all in enumerate(all_rows[:30], start=1):
         row_str = " ".join(str(v) for v in row_vals_all if v is not None).lower()
         # Use first 2 cols for summary value extraction
         col1 = row_vals_all[0] if row_vals_all else None
@@ -500,14 +502,10 @@ def parse_bring_excel_specification(
             "Could not find data header row in Excel specification",
             file_name=file_path.name,
         )
-        wb.close()
         return spec_header, []
 
     # ── Read column headers ───────────────────────────────────────────────────
-    raw_headers = [
-        ws.cell(row=header_row_idx, column=c).value
-        for c in range(1, ws.max_column + 1)
-    ]
+    raw_headers = all_rows[header_row_idx - 1]  # all_rows is 0-indexed
     col_map = _map_columns([str(h) if h else "" for h in raw_headers])
 
     logger.info(
@@ -520,11 +518,7 @@ def parse_bring_excel_specification(
     lines: List[BringInvoiceLine] = []
     line_no = 0
 
-    for row_idx in range(header_row_idx + 1, ws.max_row + 1):
-        row_vals = [
-            ws.cell(row=row_idx, column=c).value
-            for c in range(1, ws.max_column + 1)
-        ]
+    for row_vals in all_rows[header_row_idx:]:  # all_rows is 0-indexed; header_row_idx+1 row = index header_row_idx
         # Skip empty rows
         if all(v is None for v in row_vals):
             continue
@@ -636,7 +630,6 @@ def parse_bring_excel_specification(
         )
         lines.append(line)
 
-    wb.close()
     logger.info(
         "BringParser",
         f"Excel parsed: {len(lines)} lines, spec_total_ex_vat={spec_header.total_ex_vat}",
