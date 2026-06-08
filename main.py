@@ -410,22 +410,27 @@ def main():
     write_pending_invoices(missing_bring, logger, run_id=run_id)
 
     # â”€â”€ Step 6: Generate summaries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    logger.info("Main", "Step 6: Generating summaries...")
-    log_counts = logger.get_counts()
-    payload = build_summary_payload(
-        run_id=run_id,
-        scan_timestamp=scan_ts,
-        file_records=file_records,
-        headers=all_invoice_headers,
-        lines=all_invoice_lines,
-        checks=all_checks,
-        anomalies=all_anomalies,
-        log_counts=log_counts,
-    )
-    det_path = write_deterministic_summary(
-        run_id, payload, file_records, all_invoice_headers,
-        all_invoice_lines, all_checks, all_anomalies, logger,
-    )
+    det_path = None
+    payload = {}
+    if not all_invoice_headers:
+        logger.info("Main", "Step 6: Skipped — no complete invoice pairs to summarise.")
+    else:
+        logger.info("Main", "Step 6: Generating summaries...")
+        log_counts = logger.get_counts()
+        payload = build_summary_payload(
+            run_id=run_id,
+            scan_timestamp=scan_ts,
+            file_records=file_records,
+            headers=all_invoice_headers,
+            lines=all_invoice_lines,
+            checks=all_checks,
+            anomalies=all_anomalies,
+            log_counts=log_counts,
+        )
+        det_path = write_deterministic_summary(
+            run_id, payload, file_records, all_invoice_headers,
+            all_invoice_lines, all_checks, all_anomalies, logger,
+        )
 
     # â”€â”€ Step 7: Optional AI summary (only when new invoices were written) â”€â”€â”€â”€
     ai_text: str | None = None
@@ -445,25 +450,33 @@ def main():
     # â”€â”€ Step 8: Run export + HTML dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     logger.info("Main", "Step 8: Generating run export and dashboard...")
     if written_keys or missing_bring:
+        rpt_headers    = [h  for h  in all_invoice_headers if (h.carrier, h.invoice_number) in written_keys]
+        rpt_lines      = [ln for ln in all_invoice_lines   if (ln.carrier, ln.invoice_number) in written_keys]
+        rpt_checks     = [c  for c  in all_checks          if (c.carrier, c.invoice_number) in written_keys]
+        rpt_anomalies  = [a  for a  in all_anomalies       if (a.carrier, a.invoice_number) in written_keys]
+        rpt_lines_dict = {k: v for k, v in all_lines.items() if k in written_keys}
         write_run_export(
-            run_id, payload, all_invoice_headers, all_invoice_lines,
-            all_checks, logger, ai_summary=ai_text, anomalies=all_anomalies,
-            missing_bring=missing_bring, all_lines_dict=all_lines,
+            run_id, payload, rpt_headers, rpt_lines,
+            rpt_checks, logger, ai_summary=ai_text, anomalies=rpt_anomalies,
+            missing_bring=missing_bring, all_lines_dict=rpt_lines_dict,
         )
     else:
         logger.info("Main", "Step 8: Skipping For_Email export â€” no new invoices.")
     write_html_dashboard(logger)
 
     # â”€â”€ Step 9: Email summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    xlsx_path = config.FOR_EMAIL_DIR / f"summary_{run_id}.xlsx"
-    send_summary_email(
-        run_id=run_id,
-        summary_md_path=det_path,
-        xlsx_path=xlsx_path if xlsx_path.exists() else None,
-        logger=logger,
-        check_counts=payload.get("check_counts", {}),
-        total_amount=sum(ln.amount or 0.0 for ln in all_invoice_lines),
-    )
+    if det_path is None:
+        logger.info("Main", "Step 9: Skipped — no complete invoice pairs, no summary email sent.")
+    else:
+        xlsx_path = config.FOR_EMAIL_DIR / f"summary_{run_id}.xlsx"
+        send_summary_email(
+            run_id=run_id,
+            summary_md_path=det_path,
+            xlsx_path=xlsx_path if xlsx_path.exists() else None,
+            logger=logger,
+            check_counts=payload.get("check_counts", {}),
+            total_amount=sum(ln.amount or 0.0 for ln in all_invoice_lines),
+        )
 
     # â”€â”€ File movement (if configured) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if config.MOVE_FILES_AFTER_PROCESSING:
