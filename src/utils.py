@@ -50,6 +50,16 @@ def parse_date(value: str) -> Optional[str]:
     s = str(value).strip()
     if not s:
         return None
+    # Unambiguous ISO format (YYYY-MM-DD...) must be parsed as-is — dateutil's
+    # dayfirst=True swaps the last two numeric groups even when the year is
+    # already unambiguous, e.g. turning "2026-06-12" into 2026-12-06.
+    iso_m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)
+    if iso_m:
+        try:
+            dt = datetime.strptime(iso_m.group(0), "%Y-%m-%d")
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
     # Try to import dateutil for flexible parsing
     try:
         from dateutil import parser as du_parser

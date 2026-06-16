@@ -32,6 +32,18 @@ def _e(val: Any) -> str:
     return html_lib.escape(str(val) if val is not None else "")
 
 
+# Service families used to prorate invoice-level fuel surcharges (mirrors run_exporter.py)
+_PAKET_SVC_CATS = frozenset({"Parcel", "Service Point", "Parcel Locker"})
+_PALL_SVC_CATS  = frozenset({"Pallet"})
+
+
+def _fuel_svc_hint(surcharge_raw: str) -> str | None:
+    n = (surcharge_raw or "").lower()
+    if "pall"  in n: return "pall"
+    if "paket" in n: return "paket"
+    return None
+
+
 def write_html_dashboard(logger: ProcessingLogger) -> None:
     """Read all output CSVs and write 02_Output/dashboard.html."""
     invoices = _read_csv(config.INVOICE_HEADER_CSV)
@@ -140,10 +152,33 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
 
     sc_svc_agg: dict = defaultdict(float)
     for sc in surcharges:
-        inv_no = sc.get("invoice_number", "")
+        inv_no  = sc.get("invoice_number", "")
         svc_cat = sc.get("related_service_category", "") or "Unknown"
-        sc_cat = sc.get("surcharge_category", "Unknown") or "Unknown"
-        sc_svc_agg[(inv_no, svc_cat, sc_cat)] += _safe_float(sc.get("amount"))
+        sc_cat  = sc.get("surcharge_category", "Unknown") or "Unknown"
+        amt     = _safe_float(sc.get("amount"))
+
+        if svc_cat != "Unknown":
+            sc_svc_agg[(inv_no, svc_cat, sc_cat)] += amt
+        elif sc_cat == "Fuel":
+            # Prorate invoice-level fuel to services by line count.
+            # PostNord separates Drivmedelstillägg Paket (parcel family) and Pall.
+            hint = _fuel_svc_hint(sc.get("surcharge_raw", "") or "")
+            if hint == "pall":
+                candidates = _PALL_SVC_CATS
+            elif hint == "paket":
+                candidates = _PAKET_SVC_CATS
+            else:
+                candidates = {cat for (i, cat) in base_agg if i == inv_no}
+            counts = {cat: base_agg[(inv_no, cat)]["count"]
+                      for cat in candidates if (inv_no, cat) in base_agg}
+            total_cnt = sum(counts.values())
+            if total_cnt > 0:
+                for cat, cnt in counts.items():
+                    sc_svc_agg[(inv_no, cat, sc_cat)] += amt * cnt / total_cnt
+            else:
+                sc_svc_agg[(inv_no, "Unknown", sc_cat)] += amt
+        else:
+            sc_svc_agg[(inv_no, svc_cat, sc_cat)] += amt
 
     all_sc_cats = sorted({k[2] for k in sc_svc_agg})
 
@@ -271,7 +306,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     tr:last-child td{{border-bottom:none}}
     tr:hover td{{background:#f5f9ff}}
     td.num{{text-align:right;font-variant-numeric:tabular-nums}}
-    .table-wrap{{overflow-y:auto;border-radius:6px;border:1px solid #e8e8e8}}
+    .table-wrap{{overflow-x:auto;overflow-y:auto;border-radius:6px;border:1px solid #e8e8e8}}
     .table-wrap.fixed-h{{max-height:380px}}
 
     /* Badges */
@@ -405,37 +440,30 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     <canvas id="timelineChart" height="90"></canvas>
   </div>
 
-  <!-- Avg cost per service -->
-  <div class="card">
-    <h2>Genomsnittskostnad per tjänstetyp (inkl. tillägg) <span class="count" id="svcCostCount"></span></h2>
-    <div class="table-wrap fixed-h">
-      <table id="svcCostTable">
-        <thead id="svcCostHead"></thead>
-        <tbody id="svcCostBody"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Service breakdown + Surcharges -->
+  <!-- Avg cost trend + Surcharges side by side -->
   <div class="grid-3-2">
     <div class="card">
-      <h2>Försändelser per tjänstetyp <span class="count" id="svcCount"></span></h2>
-      <div class="table-wrap fixed-h">
-        <table id="svcTable">
-          <thead><tr>
-            <th>Tjänstetyp</th><th>Transportör</th>
-            <th class="num">Antal</th>
-            <th class="num">Total (SEK)</th>
-            <th class="num">Snitt (SEK)</th>
-            <th class="num">Andel</th>
-          </tr></thead>
-          <tbody id="svcBody"></tbody>
-        </table>
-      </div>
+      <h2>Snittkostnad per tjänstetyp och månad (inkl. tillägg)
+        <span class="count" style="font-size:11px;color:#bbb;font-weight:400">
+          &nbsp;Bring=NOK · PostNord=SEK
+        </span>
+      </h2>
+      <canvas id="avgTrendChart" height="140"></canvas>
     </div>
     <div class="card">
       <h2>Tilläggsavgifter <span class="count" id="scCount"></span></h2>
       <canvas id="surchargeChart" height="220"></canvas>
+    </div>
+  </div>
+
+  <!-- Cost per service table -->
+  <div class="card">
+    <h2>Kostnad per tjänstetyp (inkl. tillägg) <span class="count" id="svcCostCount"></span></h2>
+    <div class="table-wrap">
+      <table id="svcCostTable">
+        <thead id="svcCostHead"></thead>
+        <tbody id="svcCostBody"></tbody>
+      </table>
     </div>
   </div>
 
@@ -506,7 +534,7 @@ function esc(s) {{
 function fmt(n)    {{ return (+n).toLocaleString('sv-SE',{{minimumFractionDigits:2,maximumFractionDigits:2}}); }}
 function fmtInt(n) {{ return Math.round(n).toLocaleString('sv-SE'); }}
 
-let volumeChart, surchargeChart, timelineChart;
+let volumeChart, surchargeChart, timelineChart, avgTrendChart;
 let _tlGran   = 'monthly';
 let _recFilter = 'all';
 let _showAllInv = false;
@@ -546,8 +574,8 @@ function applyFilters() {{
   renderRecentInvoices(filtInv);
   renderVolumeChart(filtSvc);
   renderTimelineChart(filtInv);
+  renderAvgCostTrendChart(filtSvcCost);
   renderServiceCostTable(filtSvcCost);
-  renderServiceTable(filtSvc);
   renderSurchargeChart(filtSc);
   renderAnomalyTable(filtAnom);
 }}
@@ -565,14 +593,33 @@ function resetFilters() {{
 function renderKPIs(invData, svcData, anomData) {{
   const reconInv  = invData.filter(i => i.status !== 'Pending');
   const pendInv   = invData.filter(i => i.status === 'Pending');
-  const totalCost = reconInv.reduce((s,i) => s+i.total, 0);
-  const pendCost  = pendInv.reduce((s,i)  => s+i.total, 0);
-  const totalShip = svcData.reduce((s,v)  => s+v.count, 0);
-  const avgPerShip = totalShip > 0 ? totalCost/totalShip : 0;
+  const totalShip = svcData.reduce((s,v) => s+v.count, 0);
 
+  // Group totals by currency (Bring=NOK, PostNord=SEK — must not be summed together)
+  const byCurrency = {{}};
+  reconInv.forEach(i => {{
+    const ccy = i.currency || 'SEK';
+    byCurrency[ccy] = (byCurrency[ccy] || 0) + i.total;
+  }});
+  const costLines = Object.entries(byCurrency)
+    .sort((a,b) => b[1]-a[1])
+    .map(([ccy,amt]) => `${{fmtInt(amt)}} ${{ccy}}`)
+    .join(' &nbsp;·&nbsp; ') || '–';
+
+  // Surcharge % per currency group
   const scNos = new Set(reconInv.map(i => i.invoice_no));
-  const totalSc = SC_DATA.filter(s => scNos.has(s.invoice_no)).reduce((s,v) => s+v.total, 0);
-  const scPct   = totalCost > 0 ? totalSc/totalCost*100 : 0;
+  const scByCurrency = {{}};
+  SC_DATA.filter(s => scNos.has(s.invoice_no)).forEach(s => {{
+    const inv = reconInv.find(i => i.invoice_no === s.invoice_no);
+    const ccy = inv ? (inv.currency || 'SEK') : 'SEK';
+    scByCurrency[ccy] = (scByCurrency[ccy] || 0) + s.total;
+  }});
+  const scPctLines = Object.entries(byCurrency)
+    .map(([ccy,tot]) => {{
+      const sc = scByCurrency[ccy] || 0;
+      return tot > 0 ? `${{(sc/tot*100).toFixed(1)}}% (${{ccy}})` : null;
+    }})
+    .filter(Boolean).join(' · ') || '–';
 
   const errCnt  = anomData.filter(a => a.severity==='Error').length;
   const warnCnt = anomData.filter(a => a.severity==='Warning').length;
@@ -586,7 +633,7 @@ function renderKPIs(invData, svcData, anomData) {{
     <div class="kpi orange">
       <div class="value">${{pendInv.length}}</div>
       <div class="label">Oavstämda</div>
-      <div class="sub">${{fmt(pendCost)}} SEK (preliminärt)</div>
+      <div class="sub">Inväntar dokument</div>
     </div>` : '';
 
   document.getElementById('kpiRow').innerHTML = `
@@ -597,14 +644,14 @@ function renderKPIs(invData, svcData, anomData) {{
     </div>
     ${{pendCard}}
     <div class="kpi blue">
-      <div class="value">${{fmtInt(totalCost)}}</div>
+      <div class="value" style="font-size:18px">${{costLines}}</div>
       <div class="label">Total kostnad ex-moms</div>
-      <div class="sub">SEK · bekräftade</div>
+      <div class="sub">bekräftade fakturor</div>
     </div>
     <div class="kpi grey">
-      <div class="value">${{fmt(avgPerShip)}}</div>
-      <div class="label">Snitt per försändelse</div>
-      <div class="sub">SEK ex-moms</div>
+      <div class="value">${{totalShip.toLocaleString('sv-SE')}}</div>
+      <div class="label">Försändelser</div>
+      <div class="sub">alla tjänstetyper</div>
     </div>
     <div class="kpi ${{anomCls}}">
       <div class="value">${{anomData.length}}</div>
@@ -612,9 +659,9 @@ function renderKPIs(invData, svcData, anomData) {{
       <div class="sub">${{anomSub}}</div>
     </div>
     <div class="kpi grey">
-      <div class="value">${{scPct.toFixed(1)}}%</div>
+      <div class="value" style="font-size:16px">${{scPctLines}}</div>
       <div class="label">Tillägg av total</div>
-      <div class="sub">${{fmtInt(totalSc)}} SEK</div>
+      <div class="sub">bränsle + övriga</div>
     </div>
   `;
 }}
@@ -773,61 +820,106 @@ function renderSurchargeChart(scData) {{
   }}
 }}
 
-// ── Service breakdown ─────────────────────────────────────────────────────────
-function renderServiceTable(svcData) {{
+// ── Avg cost trend per service type over time ─────────────────────────────────
+function renderAvgCostTrendChart(filtData) {{
   const agg={{}};
-  svcData.forEach(s=>{{
-    const k=s.carrier+'||'+s.service_cat;
-    if(!agg[k]) agg[k]={{carrier:s.carrier,service_cat:s.service_cat,count:0,total:0}};
-    agg[k].count+=s.count; agg[k].total+=s.total;
+  filtData.forEach(s=>{{
+    if(!s.month||!s.count) return;
+    const k=s.month+'||'+s.carrier+'||'+s.service_cat;
+    if(!agg[k]) agg[k]={{month:s.month,carrier:s.carrier,cat:s.service_cat,count:0,grand:0}};
+    agg[k].count+=s.count; agg[k].grand+=s.grand_total;
   }});
-  const rows=Object.values(agg).sort((a,b)=>b.total-a.total);
-  const grand=rows.reduce((s,r)=>s+r.total,0);
-  document.getElementById('svcCount').textContent=`(${{rows.length}} typer)`;
-  const body=document.getElementById('svcBody');
-  if(!rows.length){{body.innerHTML='<tr><td colspan="6" class="no-data">Ingen data.</td></tr>';return;}}
-  body.innerHTML=rows.map(r=>{{
-    const avg=r.count>0?r.total/r.count:0;
-    const pct=grand>0?r.total/grand*100:0;
-    return `<tr>
-      <td><strong>${{esc(r.service_cat)}}</strong></td><td>${{esc(r.carrier)}}</td>
-      <td class="num">${{r.count.toLocaleString('sv-SE')}}</td>
-      <td class="num">${{fmt(r.total)}}</td><td class="num">${{fmt(avg)}}</td>
-      <td class="num">${{pct.toFixed(1)}}%</td></tr>`;
-  }}).join('');
-  const tc=rows.reduce((s,r)=>s+r.count,0);
-  body.innerHTML+=`<tr style="background:#f0f4ff;font-weight:700">
-    <td>TOTAL</td><td>—</td><td class="num">${{tc.toLocaleString('sv-SE')}}</td>
-    <td class="num">${{fmt(grand)}}</td><td class="num">—</td><td class="num">100.0%</td></tr>`;
+  const months=[...new Set(Object.values(agg).map(v=>v.month))].filter(Boolean).sort();
+  // Unique (carrier,cat) combos sorted by total grand
+  const seen=new Set(); const combos=[];
+  Object.values(agg).forEach(v=>{{
+    const k=v.carrier+'||'+v.cat;
+    if(!seen.has(k)){{seen.add(k);combos.push({{carrier:v.carrier,cat:v.cat,total:0}});}}
+    combos.find(c=>c.carrier===v.carrier&&c.cat===v.cat).total+=v.grand;
+  }});
+  combos.sort((a,b)=>b.total-a.total);
+  // Line style per service index within carrier
+  const DASHES=[[],[6,3],[2,3],[6,2,2,2]];
+  const carIdx={{}};
+  combos.forEach(c=>{{
+    if(carIdx[c.carrier]===undefined) carIdx[c.carrier]=0;
+    c.dashIdx=carIdx[c.carrier]++;
+  }});
+  const datasets=combos.map(c=>{{
+    const color=cCol(c.carrier);
+    const data=months.map(m=>{{
+      const e=agg[m+'||'+c.carrier+'||'+c.cat];
+      return e&&e.count>0?Math.round(e.grand/e.count*100)/100:null;
+    }});
+    return {{
+      label:`${{c.carrier}} – ${{c.cat}}`,
+      data, borderColor:color, backgroundColor:color+'18',
+      borderWidth:2, borderDash:DASHES[c.dashIdx]||[],
+      pointRadius:3, tension:.3, spanGaps:true,
+    }};
+  }});
+  if(avgTrendChart){{
+    avgTrendChart.data={{labels:months,datasets}};
+    avgTrendChart.update('active');
+  }}else{{
+    avgTrendChart=new Chart(document.getElementById('avgTrendChart'),{{
+      type:'line',
+      data:{{labels:months,datasets}},
+      options:{{
+        responsive:true,
+        interaction:{{mode:'index',intersect:false}},
+        plugins:{{
+          legend:{{position:'bottom',labels:{{boxWidth:14,font:{{size:11}}}}}},
+          tooltip:{{callbacks:{{label:ctx=>' '+fmt(ctx.parsed.y)}}}},
+        }},
+        scales:{{
+          x:{{grid:{{display:false}}}},
+          y:{{beginAtZero:false,
+             ticks:{{callback:v=>v.toLocaleString('sv-SE')}},
+             grid:{{color:'#f5f5f5'}}}},
+        }},
+      }},
+    }});
+  }}
 }}
 
-// ── Avg cost per service ──────────────────────────────────────────────────────
+// ── Cost per service table (totals + averages + share) ────────────────────────
 function renderServiceCostTable(filtData) {{
-  const scCats=[...new Set(filtData.flatMap(s=>Object.keys(s.sc_by_cat)))].sort();
   const agg={{}};
   filtData.forEach(s=>{{
     const k=s.carrier+'||'+s.service_cat;
-    if(!agg[k]){{agg[k]={{carrier:s.carrier,cat:s.service_cat,count:0,base:0,sc:{{}},grand:0}};
-      scCats.forEach(c=>agg[k].sc[c]=0);}}
+    if(!agg[k]) agg[k]={{carrier:s.carrier,cat:s.service_cat,count:0,base:0,sc:0,grand:0}};
     agg[k].count+=s.count; agg[k].base+=s.base_total;
-    scCats.forEach(c=>{{agg[k].sc[c]+=s.sc_by_cat[c]||0;}});
-    agg[k].grand+=s.grand_total;
+    agg[k].sc+=s.sc_grand; agg[k].grand+=s.grand_total;
   }});
   const rows=Object.values(agg).sort((a,b)=>b.grand-a.grand);
+  const grandTotal=rows.reduce((s,r)=>s+r.grand,0);
+  const totalCount=rows.reduce((s,r)=>s+r.count,0);
   document.getElementById('svcCostCount').textContent=`(${{rows.length}} typ${{rows.length!==1?'er':''}})`;
-  const scH=scCats.map(c=>`<th class="num">${{esc(c)}}<br><small style="font-weight:400">snitt</small></th>`).join('');
   document.getElementById('svcCostHead').innerHTML=`<tr>
     <th>Tjänstetyp</th><th>Transportör</th><th class="num">Antal</th>
-    <th class="num">Snitt bas (SEK)</th>${{scH}}<th class="num">Snitt total (SEK)</th></tr>`;
-  if(!rows.length){{document.getElementById('svcCostBody').innerHTML='<tr><td colspan="99" class="no-data">Ingen data.</td></tr>';return;}}
+    <th class="num">Total</th><th class="num">Andel</th>
+    <th class="num">Snitt bas</th><th class="num">Snitt tillägg</th>
+    <th class="num">Snitt total</th></tr>`;
+  if(!rows.length){{document.getElementById('svcCostBody').innerHTML='<tr><td colspan="8" class="no-data">Ingen data.</td></tr>';return;}}
   document.getElementById('svcCostBody').innerHTML=rows.map(r=>{{
     const n=r.count||1;
-    const sc=scCats.map(c=>`<td class="num">${{fmt(r.sc[c]/n)}}</td>`).join('');
-    return `<tr><td><strong>${{esc(r.cat)}}</strong></td><td>${{esc(r.carrier)}}</td>
+    const pct=grandTotal>0?r.grand/grandTotal*100:0;
+    return `<tr>
+      <td><strong>${{esc(r.cat)}}</strong></td><td>${{esc(r.carrier)}}</td>
       <td class="num">${{r.count.toLocaleString('sv-SE')}}</td>
-      <td class="num">${{fmt(r.base/n)}}</td>${{sc}}
+      <td class="num">${{fmt(r.grand)}}</td>
+      <td class="num">${{pct.toFixed(1)}}%</td>
+      <td class="num">${{fmt(r.base/n)}}</td>
+      <td class="num">${{fmt(r.sc/n)}}</td>
       <td class="num"><strong>${{fmt(r.grand/n)}}</strong></td></tr>`;
   }}).join('');
+  document.getElementById('svcCostBody').innerHTML+=`<tr style="background:#f0f4ff;font-weight:700">
+    <td>TOTAL</td><td>—</td>
+    <td class="num">${{totalCount.toLocaleString('sv-SE')}}</td>
+    <td class="num">${{fmt(grandTotal)}}</td>
+    <td class="num">100.0%</td>
+    <td colspan="3" class="num">—</td></tr>`;
 }}
 
 // ── Anomaly table ─────────────────────────────────────────────────────────────

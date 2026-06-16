@@ -365,7 +365,11 @@ def detect_non_nordic_destinations(
     anomalies: List[Anomaly] = []
     for country, lns in sorted(foreign.items()):
         total_amt = sum(ln.amount or 0.0 for ln in lns)
-        sample_ids = [ln.shipment_number for ln in lns if ln.shipment_number][:5]
+        sample_ids = [
+            getattr(ln, "shipment_number", None) or getattr(ln, "kolli_id", None) or ""
+            for ln in lns
+        ]
+        sample_ids = [s for s in sample_ids if s][:5]
         sample_str = ", ".join(sample_ids) + (" …" if len(lns) > 5 else "")
         anomalies.append(Anomaly(
             anomaly_type="NonNordicDestination",

@@ -12,6 +12,7 @@ from src.processing_logger import ProcessingLogger
 from src.freight_summary import (
     build_summary, SummaryInput,
     Invoice, Service, Surcharge, Anomaly as SummaryAnomaly, Unallocated, ServiceSurcharge,
+    Pending as SummaryPending,
 )
 
 
@@ -43,6 +44,20 @@ _SC_LABEL = {
     "Other":            "Övrigt",
     "Unknown":          "Okänt tillägg",
 }
+
+# Service families for prorating invoice-level fuel surcharges.
+# PostNord bills "Drivmedelstillägg Paket" (parcel family) and
+# "Drivmedelstillägg Pall" (pallet) as separate invoice-level lines.
+_PAKET_SVC_CATS = frozenset({"Parcel", "Service Point", "Parcel Locker"})
+_PALL_SVC_CATS  = frozenset({"Pallet"})
+
+
+def _inv_fuel_hint(surcharge_name_raw: str) -> str | None:
+    """Return 'pall' or 'paket' if the surcharge name indicates a service family."""
+    n = (surcharge_name_raw or "").lower()
+    if "pall"  in n: return "pall"
+    if "paket" in n: return "paket"
+    return None
 
 
 # ── Data mapper ───────────────────────────────────────────────────────────────
@@ -141,7 +156,10 @@ def _build_summary_input(
                 # No ID available — count each line as one sändning
                 svc_agg[(carrier, cat)]["shipments"].add(f"{inv_num}|line_{id(ln)}")
             svc_agg[(carrier, cat)]["total"] += getattr(ln, "amount", 0.0) or 0.0
-            svc_agg[(carrier, cat)]["lines"] += 1
+            # Use quantity (antal_kolli for Bring) so packages = total kolli, not line count.
+            # PostNord lines always have quantity=1, so behaviour is unchanged for PostNord.
+            qty = max(int(getattr(ln, "quantity", 1) or 1), 1)
+            svc_agg[(carrier, cat)]["lines"] += qty
 
     for (carrier, cat), d in sorted(svc_agg.items(), key=lambda x: -x[1]["total"]):
         services.append(Service(
@@ -174,6 +192,18 @@ def _build_summary_input(
                     amount  = round(abs(gap), 2),
                 ))
 
+    # ── Currency per carrier (first invoice seen wins; all invoices for a carrier
+    #    are expected to share the same currency) ──────────────────────────────
+    carrier_currency: dict[str, str] = {}
+    for h in headers:
+        ccy = (getattr(h, "currency", "") or "").strip().upper()
+        if ccy and h.carrier not in carrier_currency:
+            carrier_currency[h.carrier] = ccy
+    # Fallback: any carrier without a detected currency gets SEK
+    for h in headers:
+        if h.carrier not in carrier_currency:
+            carrier_currency[h.carrier] = "SEK"
+
     # ── Surcharges (carrier-level for Tillägg tab) + per-service for Kostnad tab ──
     surcharges: list[Surcharge] = []
     service_surcharges: list[ServiceSurcharge] = []
@@ -188,8 +218,31 @@ def _build_summary_input(
             sc_cat  = getattr(ln, "surcharge_category", None) or "Unknown"
             svc_cat = getattr(ln, "service_category",   None) or "Unknown"
             amt     = getattr(ln, "amount", 0.0) or 0.0
-            sc_carrier[(carrier, sc_cat)]           += amt
-            sc_service[(carrier, svc_cat, sc_cat)]  += amt
+            sc_carrier[(carrier, sc_cat)] += amt
+            if svc_cat != "Unknown":
+                sc_service[(carrier, svc_cat, sc_cat)] += amt
+            elif sc_cat == "Fuel":
+                # Invoice-level fuel: prorate to services by shipment count.
+                # PostNord separates Paket (parcel family) and Pall; use name hint.
+                hint = _inv_fuel_hint(getattr(ln, "surcharge_name_raw", "") or "")
+                if hint == "pall":
+                    candidates = _PALL_SVC_CATS
+                elif hint == "paket":
+                    candidates = _PAKET_SVC_CATS
+                else:
+                    candidates = frozenset(cat for (c, cat) in svc_agg if c == carrier)
+                ship_counts = {
+                    cat: len(svc_agg[(carrier, cat)]["shipments"])
+                    for cat in candidates if (carrier, cat) in svc_agg
+                }
+                total_ships = sum(ship_counts.values())
+                if total_ships > 0:
+                    for cat, n_ships in ship_counts.items():
+                        sc_service[(carrier, cat, sc_cat)] += amt * n_ships / total_ships
+                else:
+                    sc_service[(carrier, "Unknown", sc_cat)] += amt
+            else:
+                sc_service[(carrier, svc_cat, sc_cat)] += amt
 
     for (carrier, cat), total in sorted(sc_carrier.items(), key=lambda x: -x[1]):
         surcharges.append(Surcharge(
@@ -244,18 +297,14 @@ def _build_summary_input(
             source           = source,
         ))
 
-    # Pending as anomalies
-    for m in missing_bring:
-        summary_anomalies.append(SummaryAnomaly(
-            severity         = "Warning",
-            carrier          = "Bring",
-            invoice_number   = m.get("invoice_number", ""),
-            anomaly_type     = "Ofullständig fakturauppsättning",
-            description      = m.get("message", "PDF eller Excel saknas"),
-            suggested_action = "Hämta saknad fil och lägg i 00_Inbox för ombearbetning.",
-            ai_explanation   = "",
-            source           = "Regel",
-        ))
+    pending_items = [
+        SummaryPending(
+            invoice_number = m.get("invoice_number", ""),
+            missing_file   = m.get("missing_file", ""),
+            found_file     = m.get("found_file", ""),
+        )
+        for m in missing_bring
+    ]
 
     return SummaryInput(
         run_id             = run_id,
@@ -267,6 +316,8 @@ def _build_summary_input(
         anomalies          = summary_anomalies,
         unallocated        = unallocated,
         service_surcharges = service_surcharges,
+        carrier_currency   = carrier_currency,
+        pending            = pending_items,
     )
 
 

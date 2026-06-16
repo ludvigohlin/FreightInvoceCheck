@@ -33,9 +33,9 @@ _PARCEL_RE = re.compile(
     r"^(PostNord\s+(?:Parcel(?:\s+Locker)?|Service\s+Point))\s+"
     r"(\d{14,22})\s+"
     r"(\d+,\d+)\s+(\d+,\d+)\s+(\d+,\d+)\s+"  # weight_kg  vol_m3  fraktdr_vikt (all have commas)
-    r"(FI-\d+|DK-\d+|\d{5})\s*"               # postal code (SE/FI/DK)
+    r"(FI-\d+|DK-\d+|NO-\d+|\d{5})\s*"        # postal code (SE/FI/DK/NO)
     r"([A-ZÅÄÖÉÜ][A-ZÅÄÖÉÜÀÂÆŒÇÄÖÜ\s\-]*?)?"  # city (optional, may wrap to next line)
-    r"\s*([\d][\d\s\xa0]*,\d{2})\s*$",
+    r"\s*([\d][\d\s\xa0]*,\d{2,})\s*$",        # amount — allow 2+ decimals for PDF artifacts
     re.UNICODE,
 )
 
@@ -44,9 +44,9 @@ _PARCEL_SHORT_RE = re.compile(
     r"^(PostNord\s+(?:Parcel(?:\s+Locker)?|Service\s+Point))\s+"
     r"(\d{14,22})\s+"
     r"(\d+,\d+)\s+(\d+,\d+)\s+"              # weight_kg  vol_m3
-    r"(FI-\d+|DK-\d+|\d{5})\s*"
+    r"(FI-\d+|DK-\d+|NO-\d+|\d{5})\s*"
     r"([A-ZÅÄÖÉÜ][A-ZÅÄÖÉÜÀÂÆŒÇÄÖÜ\s\-]*?)?"
-    r"\s*([\d][\d\s\xa0]*,\d{2})\s*$",
+    r"\s*([\d][\d\s\xa0]*,\d{2,})\s*$",
     re.UNICODE,
 )
 
@@ -54,9 +54,9 @@ _PARCEL_SHORT_RE = re.compile(
 _PALLET_RE = re.compile(
     r"^(PostNord\s+Pallet\s+\S+)\s+"
     r"(\d{14,22})\s+"
-    r"(FI-\d+|DK-\d+|\d{5})\s*"
+    r"(FI-\d+|DK-\d+|NO-\d+|\d{5})\s*"
     r"([A-ZÅÄÖÉÜ][A-ZÅÄÖÉÜÀÂÆŒÇÄÖÜ\s\-]*?)?"
-    r"\s*([\d][\d\s\xa0]*,\d{2})\s*$",
+    r"\s*([\d][\d\s\xa0]*,\d{2,})\s*$",
     re.UNICODE,
 )
 
@@ -370,12 +370,15 @@ def _parse_invoice_surcharges(
     surcharge_mapping: dict,
     line_counter: list,     # mutable [int] counter
 ) -> List[PostNordInvoiceLine]:
-    """Extract invoice-level surcharges from page 1 and return as PostNordInvoiceLine list."""
+    """Extract invoice-level surcharges from page 1 and return as PostNordInvoiceLine list.
+
+    Uses findall so multiple occurrences of the same charge type (e.g. two
+    Drivmedelstillägg Paket lines — one VAT-exempt, one at 25%) are all captured.
+    """
     ts = datetime.now().isoformat(timespec="seconds")
     lines = []
     for pattern, clean_name, default_category in _INV_SURCHARGES:
-        m = pattern.search(page1_text)
-        if m:
+        for m in pattern.finditer(page1_text):
             amount = parse_swedish_number(m.group(1))
             if amount is not None and amount != 0.0:
                 category = _classify_surcharge(clean_name, surcharge_mapping) or default_category
@@ -407,7 +410,7 @@ def _is_swedish_postal(postal: str) -> bool:
 def _needs_city(postal: str) -> bool:
     """True if this postal code belongs to a country that has a city on the shipment line."""
     p = postal.upper()
-    return not p.startswith("FI-") and not p.startswith("DK-")
+    return not p.startswith("FI-") and not p.startswith("DK-") and not p.startswith("NO-")
 
 
 def _match_shipment(line: str) -> Optional[Tuple[str, str, Optional[float], Optional[float],
@@ -510,6 +513,10 @@ def _parse_spec_pages(
             if ship:
                 emit_current()
                 service_name, kolli_id, weight, vol, fraktdr, postal, city, amount = ship
+                # PDF artifacts can append extra digits to amounts (e.g. 375,002 instead of
+                # 375,00). Round to 2 decimal places to recover the correct value.
+                if amount is not None:
+                    amount = round(amount, 2)
                 service_category = _classify_service(service_name, service_mapping)
                 to_country = infer_country_from_postal_code(postal)
                 line_counter[0] += 1
@@ -569,6 +576,8 @@ def _parse_spec_pages(
                 if m:
                     surcharge_name = m.group(1).strip()
                     surcharge_amount = parse_swedish_number(m.group(2))
+                    if surcharge_amount is not None:
+                        surcharge_amount = round(surcharge_amount, 2)
                     if surcharge_amount is not None and surcharge_amount != 0.0:
                         surcharge_category = _classify_surcharge(surcharge_name, surcharge_mapping)
                         line_counter[0] += 1

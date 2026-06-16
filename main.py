@@ -67,7 +67,7 @@ from src.claude_client import (
 )
 from src.run_exporter import write_run_export
 from src.dashboard_writer import write_html_dashboard
-from src.email_sender import send_summary_email
+from src.email_sender import send_summary_email, send_idle_email
 
 
 def parse_args():
@@ -115,6 +115,11 @@ def main():
         logger.info("Main", "No files found in inbox. Exiting.")
         if not args.dry_run:
             write_file_inventory([], logger)
+            send_idle_email(
+                run_id, logger,
+                reason="Inga filer hittades i 00_Inbox — inget att bearbeta.",
+                log_counts=logger.get_counts(),
+            )
         _print_summary(run_id, scan_ts, [], [], [], [], [], logger)
         return
 
@@ -449,7 +454,7 @@ def main():
 
     # â”€â”€ Step 8: Run export + HTML dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     logger.info("Main", "Step 8: Generating run export and dashboard...")
-    if written_keys or missing_bring:
+    if written_keys:
         rpt_headers    = [h  for h  in all_invoice_headers if (h.carrier, h.invoice_number) in written_keys]
         rpt_lines      = [ln for ln in all_invoice_lines   if (ln.carrier, ln.invoice_number) in written_keys]
         rpt_checks     = [c  for c  in all_checks          if (c.carrier, c.invoice_number) in written_keys]
@@ -465,9 +470,8 @@ def main():
     write_html_dashboard(logger)
 
     # â”€â”€ Step 9: Email summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if det_path is None:
-        logger.info("Main", "Step 9: Skipped — no complete invoice pairs, no summary email sent.")
-    else:
+    log_counts = logger.get_counts()
+    if det_path is not None and written_keys:
         xlsx_path = config.FOR_EMAIL_DIR / f"summary_{run_id}.xlsx"
         send_summary_email(
             run_id=run_id,
@@ -476,6 +480,24 @@ def main():
             logger=logger,
             check_counts=payload.get("check_counts", {}),
             total_amount=sum(ln.amount or 0.0 for ln in all_invoice_lines),
+            log_counts=log_counts,
+        )
+    else:
+        reason_parts = []
+        if missing_bring:
+            reason_parts.append(
+                f"{len(missing_bring)} Bring-faktura(or) inväntar saknat dokument."
+            )
+        if not written_keys and all_invoice_headers:
+            reason_parts.append("Fakturorna i inkorgen är redan bearbetade från tidigare körningar.")
+        elif not all_invoice_headers and file_records:
+            reason_parts.append("Inga fullständiga fakturapar kunde matchas i denna körning.")
+        reason = " ".join(reason_parts) or "Inga nya fakturor att rapportera."
+        send_idle_email(
+            run_id, logger,
+            reason=reason,
+            log_counts=log_counts,
+            pending_items=missing_bring,
         )
 
     # â”€â”€ File movement (if configured) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

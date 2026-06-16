@@ -20,8 +20,10 @@ warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 # ── Bring description parsing ─────────────────────────────────────────────────
 # Format: "4027 Business Parcel Bulk, Fuel fee (332)"
 #     or: "9999 Business Parcel Bulk (332)"
+#     or: "332 Business Parcel Bulk, Fuel fee"   (no trailing route code)
+#     or: "332 Business Parcel Bulk"
 _DESC_PATTERN = re.compile(
-    r"^(\d+)\s+(.+?)(?:,\s*(.+?))?\s*\((\d+)\)\s*$"
+    r"^(\d+)\s+([^,(]+?)(?:,\s*([^(]+?))?\s*(?:\((\d+)\))?\s*$"
 )
 
 # Bring invoice number prefix (typically starts with 40)

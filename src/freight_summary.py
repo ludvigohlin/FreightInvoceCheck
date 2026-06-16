@@ -119,6 +119,14 @@ class ServiceSurcharge:
 
 
 @dataclass
+class Pending:
+    """Bring invoice where only one of the two required files has arrived."""
+    invoice_number: str
+    missing_file: str
+    found_file: str
+
+
+@dataclass
 class SummaryInput:
     run_id: str
     generated: str                  # "YYYY-MM-DD HH:MM"
@@ -129,6 +137,8 @@ class SummaryInput:
     anomalies: list[Anomaly]
     unallocated: list[Unallocated] = field(default_factory=list)
     service_surcharges: list[ServiceSurcharge] = field(default_factory=list)
+    carrier_currency: dict[str, str] = field(default_factory=dict)  # carrier -> "SEK"/"NOK"/etc.
+    pending: list[Pending] = field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -136,6 +146,7 @@ class SummaryInput:
 # ══════════════════════════════════════════════════════════════════════════════
 
 _NAVY   = "1F3A5F"; _GREY   = "5B6B7B"; _LINE   = "D9DEE5"
+_PEND_F = "E8F4FC"; _PEND_T = "1A5276"
 _OK_F   = "E3F1E4"; _OK_T   = "1E6B33"
 _WARN_F = "FCEFD6"; _WARN_T = "8A5A00"
 _ERR_F  = "FBE0E0"; _ERR_T  = "9B1C1C"
@@ -208,7 +219,7 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
                   carrier_totals: dict, carrier_fuel: dict,
                   carrier_other: dict, carrier_frakt: dict) -> None:
     ws = wb.active
-    ws.title = "Attest"
+    ws.title = "Summary"
     ws.sheet_view.showGridLines = False
     for i, w in enumerate([20, 16, 13, 18, 14, 12, 12, 48], 1):
         ws.column_dimensions[_scol(i)].width = w
@@ -231,37 +242,73 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
         verdict = (f"{len(d.invoices)} fakturor  ·  {total:,.0f} SEK ex moms  ·  "
                    f"{n_warn} varningar – kontrollera markerade fakturor")
         vf, vt = _WARN_F, _WARN_T
+    elif not d.invoices and d.pending:
+        verdict = f"{len(d.pending)} faktura(or) inväntar saknat dokument – se Inväntar dokument nedan"
+        vf, vt = _PEND_F, _PEND_T
     else:
         verdict = f"{len(d.invoices)} fakturor  ·  {total:,.0f} SEK ex moms  ·  Inga fel – redo för attest"
         vf, vt = _OK_F, _OK_T
     ws.merge_cells("A4:H4")
     _c(ws, 4, 1, verdict.replace(",", " "), bold=True, size=11, color=vt, fill=vf, border=_box)
 
-    # AI-granskning block
+    # KPI tiles (4 tiles, 2 cols each)
     r = 6
-    ws.merge_cells(f"A{r}:H{r}")
-    _c(ws, r, 1, "AI-granskning", bold=True, size=10, color=_AI_T, fill=_AI_F, border=_box)
-    r += 1
-    ai_total   = sum(1 for a in d.anomalies if a.source == "AI")
-    ai_flagged = sum(1 for a in d.anomalies if a.source == "AI" and a.severity in ("Error", "Warning"))
-    rule_total = sum(1 for a in d.anomalies if a.source == "Regel")
-    for lab, val in [
-        ("Poster granskade av AI",            str(ai_total)),
-        ("AI-flaggat (ej löst av regler)",    str(ai_flagged)),
-        ("Poster lösta av regler",            str(rule_total)),
-    ]:
-        _c(ws, r, 1, lab,  size=9, color=_AI_T, fill=_AI_F, border=_box)
-        ws.merge_cells(f"B{r}:G{r}")
-        _c(ws, r, 2, val,  size=9, bold=True, color=_AI_T, fill=_AI_F, align="center", border=_box)
-        _c(ws, r, 8, "",   fill=_AI_F, border=_box)
-        r += 1
-    ws.merge_cells(f"A{r}:H{r}")
-    _c(ws, r, 1,
-       "AI triggas när reglerna inte kan matcha/klassificera en rad. "
-       "AI-flaggade poster (markerade på fliken Avvikelser) kräver manuell bedömning.",
-       size=8, italic=True, color=_GREY, fill=_AI_F, wrap=True, border=_box)
-    ws.row_dimensions[r].height = 28
-    r += 2
+    tiles = []
+    for c in carriers:
+        ct  = carrier_totals[c]
+        ccy = d.carrier_currency.get(c, "SEK")
+        cf  = _carrier_fill(c)
+        fuel_amt  = carrier_fuel.get(c, 0.0)
+        fuel_pct  = fuel_amt / ct if ct else 0.0
+        tiles.append({
+            "value": f"{ct:,.0f}",
+            "unit":  ccy,
+            "label": f"Total {c}",
+            "sub":   f"Bränsle {fuel_pct:.0%}",
+            "fill":  cf,
+        })
+    n_anom_issues = sum(1 for a in d.anomalies if a.severity in ("Error", "Warning"))
+    n_inv_issues  = n_err + n_warn
+    anom_fill = _ERR_F if any(a.severity == "Error" for a in d.anomalies) \
+                else _WARN_F if n_anom_issues else _OK_F
+    inv_fill  = _ERR_F if n_err else _WARN_F if n_warn else _OK_F
+    tiles.append({
+        "value": str(n_anom_issues),
+        "unit":  "",
+        "label": "Avvikelser",
+        "sub":   "fel eller varning",
+        "fill":  anom_fill,
+    })
+    tiles.append({
+        "value": str(n_inv_issues),
+        "unit":  "",
+        "label": "Fakturor m. anmärkning",
+        "sub":   f"{len(d.invoices)} tot",
+        "fill":  inv_fill,
+    })
+
+    n_tiles = min(len(tiles), 4)
+    for ti, tile in enumerate(tiles[:4]):
+        c1 = ti * 2 + 1
+        c2 = c1 + 1
+        ws.merge_cells(start_row=r,   start_column=c1, end_row=r,   end_column=c2)
+        ws.merge_cells(start_row=r+1, start_column=c1, end_row=r+1, end_column=c2)
+        ws.merge_cells(start_row=r+2, start_column=c1, end_row=r+2, end_column=c2)
+        val_txt = tile["value"] + (f" {tile['unit']}" if tile["unit"] else "")
+        _c(ws, r,   c1, val_txt,      bold=True, size=16, color=_NAVY,
+           fill=tile["fill"], align="center", border=_box)
+        _c(ws, r+1, c1, tile["label"], size=9, color=_NAVY,
+           fill=tile["fill"], align="center", border=_box)
+        _c(ws, r+2, c1, tile["sub"],   size=8, color=_GREY, italic=True,
+           fill=tile["fill"], align="center", border=_box)
+    # Fill remaining columns when fewer than 4 tiles
+    for fill_col in range(n_tiles * 2 + 1, 9):
+        for rr in (r, r + 1, r + 2):
+            _c(ws, rr, fill_col, "", border=_box)
+    ws.row_dimensions[r].height   = 26
+    ws.row_dimensions[r+1].height = 16
+    ws.row_dimensions[r+2].height = 14
+    r += 4  # 3 tile rows + 1 blank
 
     # Carrier rollup
     _c(ws, r, 1, "Summa per leverantör", bold=True, size=11, color=_NAVY)
@@ -272,8 +319,9 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
     r += 1
     crow0 = r
     for c in carriers:
-        cf = _carrier_fill(c)
-        _c(ws, r, 1, c,                    bold=True, fill=cf, border=_box)
+        cf  = _carrier_fill(c)
+        ccy = d.carrier_currency.get(c, "SEK")
+        _c(ws, r, 1, f"{c} ({ccy})",       bold=True, fill=cf, border=_box)
         _c(ws, r, 2, sum(1 for i in d.invoices if i.carrier == c),
            align="center", fill=cf, border=_box, fmt=_INT)
         _c(ws, r, 3, carrier_totals[c],    align="right", fill=cf, border=_box, fmt=_SEK)
@@ -302,12 +350,12 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
     r = tot + 2
 
     # Invoice table
-    _c(ws, r, 1, "Fakturor – status (sorterat: fel först)", bold=True, size=11, color=_NAVY)
+    _c(ws, r, 1, "Fakturor – status", bold=True, size=11, color=_NAVY)
     r += 1
     _hdr(ws, r, ["Leverantör", "Faktura #", "Datum", "Belopp ex moms",
                  "Avstämning", "Avvikelser", "Status", "Att kolla"])
     r += 1
-    inv_sorted = sorted(d.invoices, key=lambda i: {"Error": 0, "Warning": 1, "OK": 2}[i.status])
+    inv_sorted = sorted(d.invoices, key=lambda i: i.date or "")
     for inv in inv_sorted:
         cf = _carrier_fill(inv.carrier)
         sf, st = _status_style(inv.status)
@@ -332,14 +380,32 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
         _c(ws, r, col, "", fill=_SUB_F, border=_box)
     r += 2
 
-    # Sign-off
-    _c(ws, r, 1, "Attest", bold=True, size=11, color=_NAVY)
-    r += 1
-    for lab in ["Attesterad av", "Datum", "Kommentar"]:
-        _c(ws, r, 1, lab, bold=True, border=_bot)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=5)
-        _c(ws, r, 2, "", border=_bot)
+    # ── Pending (incomplete Bring invoice pairs) ──────────────────────────────
+    if d.pending:
+        _c(ws, r, 1, "Inväntar dokument", bold=True, size=11, color=_NAVY)
         r += 1
+        for col, label in [(1, "Faktura #"), (2, "Mottaget"), (3, "Saknas")]:
+            _c(ws, r, col, label, bold=True, color=_HDR_T, fill=_HDR_F,
+               align="left" if col == 1 else "center", border=_box)
+        ws.merge_cells(start_row=r, start_column=4, end_row=r, end_column=8)
+        _c(ws, r, 4, "Kommentar", bold=True, color=_HDR_T, fill=_HDR_F, border=_box)
+        for col in (5, 6, 7, 8):
+            ws.cell(row=r, column=col).fill = PatternFill("solid", fgColor=_HDR_F)
+            ws.cell(row=r, column=col).border = _box
+        r += 1
+        for p in d.pending:
+            _c(ws, r, 1, p.invoice_number, border=_box, fill=_PEND_F)
+            _c(ws, r, 2, p.found_file,     border=_box, fill=_PEND_F, size=9)
+            _c(ws, r, 3, p.missing_file,   border=_box, fill=_PEND_F, size=9)
+            ws.merge_cells(start_row=r, start_column=4, end_row=r, end_column=8)
+            _c(ws, r, 4,
+               "Lägg saknad fil i 00_Inbox — inkluderas vid nästa körning.",
+               border=_box, fill=_PEND_F, size=9, color=_GREY, italic=True)
+            for col in (5, 6, 7, 8):
+                ws.cell(row=r, column=col).fill = PatternFill("solid", fgColor=_PEND_F)
+                ws.cell(row=r, column=col).border = _box
+            r += 1
+
     ws.freeze_panes = "A5"
 
 
@@ -350,19 +416,22 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
     _c(ws, 1, 1, "Kostnad per tjänst – per leverantör", bold=True, size=14, color=_NAVY)
     _c(ws, 2, 1, "En rad per tjänstetyp. Tillägg fördelade per tjänst.", size=9, color=_GREY)
 
-    # Column widths: Tjänst | Sändningar | Basfrakt | Bränsle | Övr. tillägg | Total | Snitt inkl. allt
-    # Columns: Tjänst | Sändningar | Kolli* | Basfrakt | Bränsle | Övr. tillägg | Total | Snitt/sändning | Snitt/kolli*
-    # * Bring only: kolli ≠ sändningar (en sändning kan ha flera kolli)
-    # For PostNord: kolli = sändningar (each line = one shipment)
-    COLS = ["Tjänst", "Sändningar", "Kolli", "Basfrakt (SEK)", "Bränsle (SEK)",
-            "Övr. tillägg (SEK)", "Total (SEK)", "Snitt / sändning (SEK)", "Snitt / kolli (SEK)"]
-    WIDTHS = [24, 12, 10, 16, 14, 16, 16, 20, 18]
-    NC = len(COLS)
+    # Columns: Tjänst | Sändningar | Kolli | Basfrakt | Bränsle | Övr. tillägg | Total |
+    #          Snitt Basfrakt | Snitt Bränsle | Snitt Övr. tillägg | Snitt/sändning (all "Snitt" per sändning)
+    # Currency label is set per carrier section from carrier_currency.
+    # Kolli > Sändningar for Bring (multi-kolli shipments); equal for PostNord (1 kolli = 1 sändning).
+    WIDTHS = [24, 12, 10, 16, 14, 16, 16, 16, 16, 16, 18]
+    NC = 11
 
     r = 4
     for c in carriers:
-        cf = _carrier_fill(c)
-        ct = carrier_totals[c]
+        cf  = _carrier_fill(c)
+        ct  = carrier_totals[c]
+        ccy = d.carrier_currency.get(c, "SEK")
+        COLS = ["Tjänst", "Sändningar", "Kolli", f"Basfrakt ({ccy})", f"Bränsle ({ccy})",
+                f"Övr. tillägg ({ccy})", f"Total ({ccy})",
+                f"Snitt basfrakt ({ccy})", f"Snitt bränsle ({ccy})", f"Snitt övr. tillägg ({ccy})",
+                f"Snitt / sändning ({ccy})"]
 
         # Index service-level surcharges (those that could be attributed to a service type)
         svc_fuel: dict[str, float] = {}
@@ -375,9 +444,12 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
             else:
                 svc_other[sc.service_name] = svc_other.get(sc.service_name, 0.0) + sc.amount
 
-        # Unattributed surcharges (invoice-level, no service linkage — typical for PostNord fuel)
-        attributed_fuel  = sum(svc_fuel.values())
-        attributed_other = sum(svc_other.values())
+        # Unattributed surcharges (invoice-level, no service linkage — typical for PostNord fuel).
+        # Only count a surcharge as "attributed" if it maps to a real service for this carrier;
+        # surcharges tied to non-existent service names (e.g. "Oklassificerat") are unattributed.
+        existing_svc_names = {s.service_name for s in d.services if s.carrier == c}
+        attributed_fuel  = sum(v for k, v in svc_fuel.items()  if k in existing_svc_names)
+        attributed_other = sum(v for k, v in svc_other.items() if k in existing_svc_names)
         unattr_fuel  = round(carrier_fuel.get(c, 0.0)  - attributed_fuel,  2)
         unattr_other = round(carrier_other.get(c, 0.0) - attributed_other, 2)
 
@@ -399,8 +471,10 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
             other  = svc_other.get(svc.service_name, 0.0)
             total  = svc.total_ex_vat + fuel + other
             kolli  = svc.packages if svc.packages else svc.shipments
-            avg_s  = total / svc.shipments if svc.shipments else 0.0
-            avg_k  = total / kolli         if kolli         else 0.0
+            avg_base  = svc.total_ex_vat / svc.shipments if svc.shipments else 0.0
+            avg_fuel  = fuel  / svc.shipments if svc.shipments else 0.0
+            avg_other = other / svc.shipments if svc.shipments else 0.0
+            avg_s     = total / svc.shipments if svc.shipments else 0.0
 
             _c(ws, r, 1, svc.service_name, fill=cf, border=_box)
             _c(ws, r, 2, svc.shipments,    align="right", fill=cf, border=_box, fmt=_INT)
@@ -410,9 +484,10 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
             _c(ws, r, 5, fuel  if fuel  else None, align="right", fill=cf, border=_box, fmt=_SEK)
             _c(ws, r, 6, other if other else None, align="right", fill=cf, border=_box, fmt=_SEK)
             _c(ws, r, 7, total,            align="right", fill=cf, border=_box, fmt=_SEK, bold=True)
-            _c(ws, r, 8, avg_s if svc.shipments else None, align="right", fill=cf, border=_box, fmt=_SEK)
-            _c(ws, r, 9, avg_k if (kolli and kolli != svc.shipments) else None,
-               align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 8, avg_base if svc.shipments else None, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 9, avg_fuel if fuel else None, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 10, avg_other if other else None, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 11, avg_s if svc.shipments else None, align="right", fill=cf, border=_box, fmt=_SEK)
             r += 1
 
         # Invoice-level (unattributed) surcharges — shown as separate row
@@ -427,7 +502,7 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
                align="right", fill=_AI_F, border=_box, fmt=_SEK, italic=True)
             _c(ws, r, 7, unattr_fuel + unattr_other,
                align="right", fill=_AI_F, border=_box, fmt=_SEK, italic=True)
-            for col in (8, 9):
+            for col in (8, 9, 10, 11):
                 _c(ws, r, col, None, fill=_AI_F, border=_box)
             r += 1
 
@@ -437,7 +512,7 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
             for col in (2, 3, 4, 5, 6):
                 _c(ws, r, col, None, border=_box)
             _c(ws, r, 7, u.amount, align="right", fill=cf, border=_box, fmt=_SEK)
-            for col in (8, 9):
+            for col in (8, 9, 10, 11):
                 _c(ws, r, col, None, border=_box)
             r += 1
 
@@ -450,9 +525,9 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
         for col, letter in [(4, "D"), (5, "E"), (6, "F"), (7, "G")]:
             _c(ws, r, col, f"=SUM({letter}{data_start}:{letter}{r-1})", bold=True,
                align="right", fill=_SUB_F, border=_box, fmt=_SEK)
-        _c(ws, r, 8, f"=IF(B{r}>0,G{r}/B{r},\"\")", bold=True, align="right",
-           fill=_SUB_F, border=_box, fmt=_SEK)
-        _c(ws, r, 9, None, fill=_SUB_F, border=_box)
+        for col, letter in [(8, "D"), (9, "E"), (10, "F"), (11, "G")]:
+            _c(ws, r, col, f"=IF(B{r}>0,{letter}{r}/B{r},\"\")", bold=True, align="right",
+               fill=_SUB_F, border=_box, fmt=_SEK)
         r += 2
 
     ws.freeze_panes = "A4"
@@ -560,7 +635,7 @@ def build_summary(data: SummaryInput, output_path: str) -> None:
     _build_surcharges(wb, data, carriers, carrier_totals)
     _build_anomalies(wb, data)
     wb.save(output_path)
-    print(f"[freight_summary] Saved → {output_path}")
+    print(f"[freight_summary] Saved -> {output_path}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -587,8 +662,11 @@ if __name__ == "__main__":
                     "Radsumma = fakturahuvud (29 998,82)",                  0,"OK"),
         ],
         services=[
-            Service("Bring",    "Kolli (parcel)",     361, 35296.43),
-            Service("Bring",    "Pall (pallet)",        7, 12200.02),
+            # packages = real sum of antal_kolli from Bring spec (1 row per kolli, qty=1 each)
+            # 389 kolli across 361 unique sändningar = 1.08 kolli/sändning average
+            Service("Bring",    "Kolli (parcel)",     361, 35296.43, packages=389),
+            Service("Bring",    "Pall (pallet)",        7, 12200.02, packages=8),
+            # PostNord: 1 kolli = 1 sändning, packages left at 0 (kolli = shipments)
             Service("PostNord", "Kolli (parcel)",     953, 60861.67),
             Service("PostNord", "Pall (pallet)",       12,  6061.00),
             Service("PostNord", "Utlämningsställe",    29,  2211.30),
@@ -612,6 +690,40 @@ if __name__ == "__main__":
             Surcharge("PostNord", "Okänt tillägg",     158.00, False, True),   # flagged
             Surcharge("PostNord", "Valuta",             73.86, False, False),
             Surcharge("PostNord", "Svavel",             53.39, False, False),
+        ],
+        carrier_currency={"Bring": "NOK", "PostNord": "SEK"},
+        service_surcharges=[
+            # ── Bring: real surcharge amounts from actual invoice data ───────────────
+            # Fuel split: 6086.32 Parcel / 4111.42 Pallet (from surcharge_lines.csv)
+            ServiceSurcharge("Bring", "Kolli (parcel)", "Bränsle (fuel)",           6086.32, True,  False),
+            ServiceSurcharge("Bring", "Pall (pallet)",  "Bränsle (fuel)",           4111.42, True,  False),
+            # Remote Area, City, Return are Parcel-only in real data
+            ServiceSurcharge("Bring", "Kolli (parcel)", "Avlägset område",          1080.00, False, False),
+            ServiceSurcharge("Bring", "Kolli (parcel)", "City (storstadstillägg)",   344.00, False, False),
+            ServiceSurcharge("Bring", "Kolli (parcel)", "Retur",                      91.11, False, False),
+            # Special Handling, Notification, City(small) are Pallet-only in real data
+            ServiceSurcharge("Bring", "Pall (pallet)",  "Specialhantering",         2655.00, False, False),
+            ServiceSurcharge("Bring", "Pall (pallet)",  "City (storstadstillägg)",    17.00, False, False),
+            ServiceSurcharge("Bring", "Pall (pallet)",  "Avisering",                 130.00, False, False),
+            # ── PostNord: fuel (Paket prorated 953 Kolli / 29 Utlämn; Pall direct) ──
+            ServiceSurcharge("PostNord", "Kolli (parcel)",   "Bränsle (fuel)",       4657.94, True,  False),
+            ServiceSurcharge("PostNord", "Utlämningsställe", "Bränsle (fuel)",        141.86, True,  False),
+            ServiceSurcharge("PostNord", "Pall (pallet)",    "Bränsle (fuel)",         570.00, True,  False),
+            # PostNord per-shipment surcharges split proportionally by shipments (953:12:29)
+            # Valuta (73.86), Svavel (53.39), Okänt (158.00) are invoice-level → not here
+            ServiceSurcharge("PostNord", "Kolli (parcel)",   "City (storstadstillägg)", 1833.00, False, False),
+            ServiceSurcharge("PostNord", "Pall (pallet)",    "City (storstadstillägg)",   23.00, False, False),
+            ServiceSurcharge("PostNord", "Utlämningsställe", "City (storstadstillägg)",   57.00, False, False),
+            ServiceSurcharge("PostNord", "Kolli (parcel)",   "Leveransförsök",          1740.00, False, False),
+            ServiceSurcharge("PostNord", "Pall (pallet)",    "Leveransförsök",             22.00, False, False),
+            ServiceSurcharge("PostNord", "Utlämningsställe", "Leveransförsök",             53.00, False, False),
+            ServiceSurcharge("PostNord", "Kolli (parcel)",   "Boxadress",                600.00, False, False),
+            ServiceSurcharge("PostNord", "Kolli (parcel)",   "Specialhantering",         748.00, False, False),
+            ServiceSurcharge("PostNord", "Pall (pallet)",    "Specialhantering",           9.00, False, False),
+            ServiceSurcharge("PostNord", "Utlämningsställe", "Specialhantering",          23.00, False, False),
+            ServiceSurcharge("PostNord", "Kolli (parcel)",   "Avlägset område",           490.00, False, False),
+            ServiceSurcharge("PostNord", "Pall (pallet)",    "Avlägset område",             6.00, False, False),
+            ServiceSurcharge("PostNord", "Utlämningsställe", "Avlägset område",            16.00, False, False),
         ],
         anomalies=[
             Anomaly("Error","PostNord","903110324329","Avstämningsdiff",
