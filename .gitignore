@@ -1,5 +1,5 @@
 # Inbox — real invoice files, never commit
-01_Inbox/
+00_Inbox/
 
 # Output — generated reports and data, never commit
 02_Output/
