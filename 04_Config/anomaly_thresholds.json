@@ -17,5 +17,9 @@
   "flag_unknown_service": true,
   "flag_unknown_surcharge": true,
   "flag_missing_invoice_number": true,
-  "flag_non_nordic_destinations": true
+  "flag_non_nordic_destinations": true,
+  "high_non_nordic_amount": 5000,
+  "flag_price_increase": true,
+  "max_price_increase_pct": 10.0,
+  "min_price_history_units": 3
 }

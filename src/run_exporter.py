@@ -89,9 +89,14 @@ def _build_summary_input(
             (c for c in inv_checks
              if c.check_name in ("PDFTotalVsExcelSummary", "LineSumVsHeaderTotal")), None
         )
-        recon_status = recon_chk.status if recon_chk else "OK"
+        # No matching check found means "never verified", not "verified and fine" —
+        # must not default to OK, or an invoice that was never reconciled would show
+        # green in the approval report. Mirrors main.py._apply_reconciliation_status.
+        recon_status = recon_chk.status if recon_chk else "NotChecked"
         # Short "Att kolla" text — just the key fact, no AI prose
-        if not recon_chk or recon_chk.status == "OK":
+        if not recon_chk:
+            recon_msg = "Ingen avstämningskontroll kunde köras för denna faktura"
+        elif recon_chk.status == "OK":
             recon_msg = ""
         elif "no lines" in recon_chk.message.lower() or "0.00" in recon_chk.actual_value:
             recon_msg = "Inga rader tolkade"
@@ -355,8 +360,12 @@ def write_run_export(
     anomalies=None,
     missing_bring: list | None = None,
     all_lines_dict: dict | None = None,
-) -> None:
-    """Write the invoice approval Excel to For_Email/ and an HTML archive to Summaries/."""
+) -> SummaryInput:
+    """Write the invoice approval Excel to For_Email/ and an HTML archive to Summaries/.
+
+    Returns the SummaryInput used to build the Excel report so callers (e.g. the
+    summary email) can reuse the same invoice statuses and reconciliation gaps
+    instead of recomputing them from scratch."""
     config.FOR_EMAIL_DIR.mkdir(parents=True, exist_ok=True)
     xlsx_path = config.FOR_EMAIL_DIR / f"summary_{run_id}.xlsx"
     html_path = config.SUMMARIES_DIR / f"summary_{run_id}.html"
@@ -376,6 +385,7 @@ def write_run_export(
 
     logger.info("RunExporter",
                 f"Power Automate file: {xlsx_path.name} | HTML archive: {html_path.name}")
+    return summary_input
 
 
 def write_missing_file_alert(

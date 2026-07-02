@@ -43,23 +43,23 @@ Rules:
 - confidence is a float between 0.0 and 1.0.
 - Return ONLY the JSON object, no other text."""
 
-MANAGEMENT_SUMMARY_PROMPT = """Write a concise freight cost management summary for Isicom AB \
-based on the pre-calculated data below.
-You must only use the figures given — do not calculate new totals or change any numbers.
-Write in clear business English. Maximum 350 words. Be direct and actionable.
+MANAGEMENT_SUMMARY_PROMPT = """Skriv en kortfattad sammanfattning av fraktkostnaderna för Isicom AB \
+baserat på den förberäknade datan nedan.
+Du får bara använda de siffror som anges — beräkna inga nya totalsummor och ändra inga tal.
+Skriv på tydlig, direkt svenska affärsprosa. Max 350 ord. Var konkret och handlingsinriktad.
 
 Data:
 {summary_json}
 
-Structure:
-1. **Overview** — files processed, carriers, invoices this run
-2. **Invoice totals** — total per carrier (use exact figures from carrier_totals)
-3. **Cost breakdown** — top service categories by spend
-4. **Surcharges** — total surcharge amount and notable categories (use surcharge_category_totals)
-5. **Reconciliation** — pass/fail status and what it means
-6. **Actions required** — only if warnings, errors, or anomalies exist; otherwise state "None"
+Struktur:
+1. **Översikt** — antal filer, bärare, fakturor denna körning
+2. **Fakturatotaler** — totalsumma per bärare (använd exakta siffror från carrier_totals)
+3. **Kostnadsfördelning** — de största tjänstekategorierna efter kostnad
+4. **Tillägg** — total tilläggssumma och anmärkningsvärda kategorier (använd surcharge_category_totals)
+5. **Avstämning** — status och vad den innebär
+6. **Åtgärder som krävs** — endast om varningar, fel eller avvikelser finns; annars skriv "Inga"
 
-Do not repeat the raw numbers verbatim — interpret them briefly for a finance manager."""
+Upprepa inte de råa siffrorna ordagrant — tolka dem kort för en ekonomiansvarig."""
 
 UNKNOWN_CARRIER_EXTRACTION_PROMPT = """You have received a freight invoice from an UNKNOWN carrier (not Bring or PostNord).
 Extract all available information and recommend what rules a developer should build to parse this carrier automatically in the future.

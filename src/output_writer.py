@@ -35,6 +35,34 @@ def get_existing_invoice_keys(csv_path: Path = None) -> Set[Tuple[str, str]]:
     return keys
 
 
+def get_existing_invoice_totals(csv_path: Path = None) -> dict:
+    """
+    Read invoice_header.csv and return {(carrier, invoice_number): total_ex_vat}
+    for the most recently written row of each invoice. Used to detect a fakturanummer
+    that reappears with a different total (reissued invoice, credit note, or data error)
+    versus a harmless re-scan of an already-captured file.
+    """
+    path = csv_path or config.INVOICE_HEADER_CSV
+    totals: dict = {}
+    if not path.exists():
+        return totals
+    try:
+        with open(path, encoding=config.CSV_ENCODING, newline="") as f:
+            reader = csv.DictReader(f, delimiter=config.CSV_DELIMITER)
+            for row in reader:
+                carrier = row.get("carrier", "").strip()
+                inv = row.get("invoice_number", "").strip()
+                if not (carrier and inv):
+                    continue
+                try:
+                    totals[(carrier, inv)] = float(row.get("total_ex_vat") or "")
+                except (TypeError, ValueError):
+                    continue
+    except Exception:
+        pass
+    return totals
+
+
 # ── Field definitions (defines column order in each CSV) ─────────────────────
 
 FILE_INVENTORY_FIELDS = [
@@ -194,7 +222,29 @@ def write_anomalies(
 PENDING_INVOICE_FIELDS = [
     "run_id", "processed_timestamp", "carrier", "invoice_number",
     "reconciliation_status", "known_total_ex_vat", "source_file", "note",
+    "first_seen_date", "age_days",
 ]
+
+
+def _read_existing_first_seen(path: Path) -> dict:
+    """Read pending_invoices.csv (if present) and return {(carrier, invoice_number): first_seen_date}
+    so a pending invoice's age can be tracked across runs even though the file is
+    otherwise overwritten each run."""
+    first_seen: dict = {}
+    if not path.exists():
+        return first_seen
+    try:
+        with open(path, encoding=config.CSV_ENCODING, newline="") as f:
+            reader = csv.DictReader(f, delimiter=config.CSV_DELIMITER)
+            for row in reader:
+                carrier = row.get("carrier", "").strip()
+                inv = row.get("invoice_number", "").strip()
+                fs = row.get("first_seen_date", "").strip()
+                if carrier and inv and fs:
+                    first_seen[(carrier, inv)] = fs
+    except Exception:
+        pass
+    return first_seen
 
 
 def write_pending_invoices(
@@ -205,11 +255,28 @@ def write_pending_invoices(
     """
     Overwrite pending_invoices.csv with the current set of incomplete invoices.
     Called every run so the file always reflects what is currently unresolved.
+    A pending invoice's first_seen_date is carried forward from the previous run's
+    file so age_days grows across runs instead of resetting to 0 every time.
     """
-    from datetime import datetime
+    from datetime import date, datetime
     config.ensure_all_directories()
+    path = config.PENDING_INVOICES_CSV
+    first_seen_map = _read_existing_first_seen(path)
+    today = date.today()
     rows = []
     for m in missing_bring:
+        key = ("Bring", m.get("invoice_number", ""))
+        first_seen = first_seen_map.get(key)
+        if not first_seen:
+            first_seen = today.isoformat()
+        try:
+            age_days = (today - date.fromisoformat(first_seen)).days
+        except ValueError:
+            age_days = 0
+        # Mutate the caller's dict in place too, so email_sender can show age
+        # without a second lookup pass.
+        m["first_seen_date"] = first_seen
+        m["age_days"] = age_days
         rows.append({
             "run_id": run_id,
             "processed_timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -217,10 +284,11 @@ def write_pending_invoices(
             "invoice_number": m.get("invoice_number", ""),
             "reconciliation_status": "Pending",
             "known_total_ex_vat": m.get("known_total_ex_vat", ""),
+            "first_seen_date": first_seen,
+            "age_days": age_days,
             "source_file": m.get("source_file", ""),
             "note": m.get("message", ""),
         })
-    path = config.PENDING_INVOICES_CSV
     with open(path, "w", newline="", encoding=config.CSV_ENCODING) as f:
         w = csv.DictWriter(f, fieldnames=PENDING_INVOICE_FIELDS, delimiter=config.CSV_DELIMITER)
         w.writeheader()

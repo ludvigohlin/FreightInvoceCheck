@@ -76,7 +76,12 @@ def _extract_invoice_number_from_text(text: str) -> Optional[str]:
 
 def _is_bring_specification_excel(file_path: Path) -> Tuple[bool, Optional[str]]:
     """
-    Check Excel workbook for Bring specification markers.
+    Check Excel workbook for Bring specification markers. Requires a plausible
+    line-item header row (Artikelnummer/Beskrivning + Avtalspris/Bruttopris) —
+    the same signal bring_parser.py itself relies on to find its data — instead
+    of accepting any Excel file that merely opens successfully. Without this, a
+    file from a different sender whose filename happened to contain "fakturanummer"
+    or "specificerad" would previously always classify as a Bring specification.
     Returns (is_bring_spec, invoice_number).
     """
     try:
@@ -87,15 +92,17 @@ def _is_bring_specification_excel(file_path: Path) -> Tuple[bool, Optional[str]]
         wb = openpyxl.load_workbook(tmp.name, read_only=True, data_only=True)
         ws = wb.active
         inv_num = None
-        for i, row in enumerate(ws.iter_rows(max_row=10, values_only=True)):
+        has_header_row = False
+        for i, row in enumerate(ws.iter_rows(max_row=20, values_only=True)):
+            row_str = " ".join(str(c) for c in row if c is not None).lower()
+            has_service_col = "artikelnummer" in row_str or "beskrivning" in row_str
+            has_price_col = "avtalspris" in row_str or "bruttopris" in row_str
+            if has_service_col and has_price_col:
+                has_header_row = True
             for cell in row:
                 if cell is None:
                     continue
                 cell_str = str(cell)
-                # Specificerad faktura marker
-                if "specificerad faktura" in cell_str.lower():
-                    # Keep scanning for invoice number
-                    pass
                 m = re.search(r"fakturanummer[:\s]+(\d+)", cell_str, re.IGNORECASE)
                 if m:
                     inv_num = m.group(1)
@@ -103,7 +110,7 @@ def _is_bring_specification_excel(file_path: Path) -> Tuple[bool, Optional[str]]
                 if m2:
                     inv_num = m2.group(1)
         wb.close()
-        return True, inv_num
+        return has_header_row, inv_num
     except Exception:
         return False, None
     finally:

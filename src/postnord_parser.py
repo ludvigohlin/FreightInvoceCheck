@@ -369,6 +369,7 @@ def _parse_invoice_surcharges(
     service_mapping: dict,
     surcharge_mapping: dict,
     line_counter: list,     # mutable [int] counter
+    logger: ProcessingLogger,
 ) -> List[PostNordInvoiceLine]:
     """Extract invoice-level surcharges from page 1 and return as PostNordInvoiceLine list.
 
@@ -380,7 +381,15 @@ def _parse_invoice_surcharges(
     for pattern, clean_name, default_category in _INV_SURCHARGES:
         for m in pattern.finditer(page1_text):
             amount = parse_swedish_number(m.group(1))
-            if amount is not None and amount != 0.0:
+            if amount is None:
+                logger.warning(
+                    "PostNordParser",
+                    f"Invoice-level surcharge '{clean_name}' matched but amount "
+                    f"could not be parsed from {m.group(1)!r} — surcharge dropped.",
+                    file_name=source_file,
+                )
+                continue
+            if amount != 0.0:
                 category = _classify_surcharge(clean_name, surcharge_mapping) or default_category
                 line_counter[0] += 1
                 ln = PostNordInvoiceLine(
@@ -670,7 +679,7 @@ def parse_postnord_pdf(
     # Invoice-level surcharges from page 1
     inv_surcharges = _parse_invoice_surcharges(
         pages[0], run_id, header.invoice_number, file_path.name,
-        service_mapping, surcharge_mapping, line_counter,
+        service_mapping, surcharge_mapping, line_counter, logger,
     )
     all_lines.extend(inv_surcharges)
 

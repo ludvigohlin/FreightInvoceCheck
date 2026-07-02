@@ -40,11 +40,15 @@ from src.bring_parser import parse_bring_pdf_header, parse_bring_excel_specifica
 from src.postnord_parser import parse_postnord_pdf
 from src.normalization import merge_bring_headers
 from src.validation import run_all_checks
-from src.anomaly_detection import detect_bring_anomalies, detect_non_nordic_destinations
+from src.anomaly_detection import (
+    Anomaly, detect_bring_anomalies, detect_non_nordic_destinations,
+    detect_price_increase_vs_history,
+)
 from src.unknown_carrier_parser import parse_unknown_carrier_file
 from src.output_writer import (
     ensure_all_output_headers,
     get_existing_invoice_keys,
+    get_existing_invoice_totals,
     write_file_inventory,
     write_invoice_headers,
     write_invoice_lines,
@@ -171,9 +175,32 @@ def main():
     # Collected for output
     all_invoice_headers = []
     all_invoice_lines = []
+    all_anomalies = []
 
     service_mapping = config.load_service_mapping()
     surcharge_mapping = config.load_surcharge_mapping()
+
+    def _flag_duplicate_in_run(carrier: str, inv: str, doc_kind: str, existing_file: str, new_file: str) -> None:
+        """Two files in the same inbox scan resolved to the same (carrier, invoice_number).
+        The later file silently overwrites the earlier one in the lookup dicts — flag it
+        so the controller knows a file was dropped instead of just losing it silently."""
+        logger.warning(
+            "Main",
+            f"Duplicate {doc_kind} for {carrier} invoice {inv} in this run: "
+            f"'{existing_file}' overwritten by '{new_file}'.",
+        )
+        all_anomalies.append(Anomaly(
+            anomaly_type="DuplicateFileInRun",
+            severity="Warning",
+            carrier=carrier,
+            invoice_number=inv or "Unknown",
+            description=(
+                f"Two {doc_kind} files for invoice {inv} were found in the same inbox scan. "
+                f"Only '{new_file}' was used — '{existing_file}' was discarded."
+            ),
+            detail=f"Discarded: {existing_file} | Used: {new_file}",
+            suggested_action="Verify the discarded file is a true duplicate, not a different invoice or a credit note with a reused number.",
+        ))
 
     # â”€â”€ Parse Bring PDFs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for rec in bring_pdf_records:
@@ -183,7 +210,11 @@ def main():
             if pdf_h:
                 inv = pdf_h.invoice_number or rec.detected_invoice_number
                 pdf_h.invoice_number = inv
-                all_pdf_headers[("Bring", inv)] = pdf_h
+                key = ("Bring", inv)
+                if key in all_pdf_headers:
+                    _flag_duplicate_in_run("Bring", inv, "PDF invoice",
+                                            all_pdf_headers[key].source_file, pdf_h.source_file)
+                all_pdf_headers[key] = pdf_h
                 rec.detected_invoice_number = inv
                 rec.processing_status = "Parsed"
             else:
@@ -206,8 +237,12 @@ def main():
             if xls_h:
                 inv = xls_h.invoice_number or rec.detected_invoice_number
                 xls_h.invoice_number = inv
-                all_excel_headers[("Bring", inv)] = xls_h
-                all_lines[("Bring", inv)] = lines
+                key = ("Bring", inv)
+                if key in all_excel_headers:
+                    _flag_duplicate_in_run("Bring", inv, "Excel specification",
+                                            all_excel_headers[key].source_file, xls_h.source_file)
+                all_excel_headers[key] = xls_h
+                all_lines[key] = lines
                 rec.detected_invoice_number = inv
                 rec.processing_status = "Parsed"
             else:
@@ -230,8 +265,12 @@ def main():
             if pn_h:
                 inv = pn_h.invoice_number or rec.detected_invoice_number
                 pn_h.invoice_number = inv
-                all_pdf_headers[("PostNord", inv)] = pn_h
-                all_lines[("PostNord", inv)] = pn_lines
+                key = ("PostNord", inv)
+                if key in all_pdf_headers:
+                    _flag_duplicate_in_run("PostNord", inv, "PDF invoice",
+                                            all_pdf_headers[key].source_file, pn_h.source_file)
+                all_pdf_headers[key] = pn_h
+                all_lines[key] = pn_lines
                 rec.detected_invoice_number = inv
                 rec.processing_status = "Parsed"
             else:
@@ -247,7 +286,6 @@ def main():
         inv for (c, inv) in list(all_pdf_headers.keys()) + list(all_excel_headers.keys())
         if c == "Bring"
     )
-    all_anomalies = []
 
     for inv_num in bring_invoice_numbers:
         pdf_h = all_pdf_headers.get(("Bring", inv_num))
@@ -284,6 +322,9 @@ def main():
             all_invoice_lines.extend(pn_lines)
             all_anomalies.extend(
                 detect_non_nordic_destinations("PostNord", inv_num, pn_lines, logger)
+            )
+            all_anomalies.extend(
+                detect_price_increase_vs_history("PostNord", inv_num, pn_lines, logger)
             )
 
     # â”€â”€ Step 3c: Unknown carrier â€” AI extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -412,6 +453,53 @@ def main():
     new_checks = [c for c in all_checks if (c.carrier, c.invoice_number) not in existing_keys]
     write_invoice_checks(new_checks, logger)
     write_anomalies(all_anomalies, logger, skip_keys=existing_keys)
+
+    # Duplicate invoice number check: a (carrier, invoice_number) that already exists
+    # in invoice_header.csv from a previous run. Written with skip_keys=() so it is
+    # NOT filtered out by the normal already-written-key suppression above — a
+    # reappearing invoice number with a different total is exactly what a controller
+    # needs to see, not silently drop.
+    existing_totals = get_existing_invoice_totals()
+    tol_warn = config.load_validation_rules().get("reconciliation", {}).get("total_tolerance_warning", 1.00)
+    duplicate_number_anomalies = []
+    for h in all_invoice_headers:
+        key = (h.carrier, h.invoice_number)
+        if key not in existing_keys:
+            continue
+        prev_total = existing_totals.get(key)
+        new_total = h.total_ex_vat
+        if prev_total is not None and new_total is not None and abs(new_total - prev_total) > tol_warn:
+            duplicate_number_anomalies.append(Anomaly(
+                anomaly_type="DuplicateInvoiceNumber",
+                severity="Error",
+                carrier=h.carrier,
+                invoice_number=h.invoice_number,
+                description=(
+                    f"Invoice {h.invoice_number} ({h.carrier}) already exists in output with a "
+                    f"different total: previously {prev_total:.2f}, now {new_total:.2f}."
+                ),
+                detail=f"Previous total_ex_vat={prev_total:.2f} | New total_ex_vat={new_total:.2f}",
+                value=round(new_total - prev_total, 2),
+                suggested_action=(
+                    "Check whether this is a corrected/reissued invoice or a data error — "
+                    "do not approve without confirming which total is correct."
+                ),
+            ))
+        else:
+            duplicate_number_anomalies.append(Anomaly(
+                anomaly_type="DuplicateInvoiceNumber",
+                severity="Info",
+                carrier=h.carrier,
+                invoice_number=h.invoice_number,
+                description=(
+                    f"Invoice {h.invoice_number} ({h.carrier}) was already processed in a "
+                    f"previous run with the same total — file re-scanned, no new data written."
+                ),
+                suggested_action="No action needed.",
+            ))
+    if duplicate_number_anomalies:
+        write_anomalies(duplicate_number_anomalies, logger, skip_keys=set())
+
     write_pending_invoices(missing_bring, logger, run_id=run_id)
 
     # â”€â”€ Step 6: Generate summaries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -460,13 +548,14 @@ def main():
         rpt_checks     = [c  for c  in all_checks          if (c.carrier, c.invoice_number) in written_keys]
         rpt_anomalies  = [a  for a  in all_anomalies       if (a.carrier, a.invoice_number) in written_keys]
         rpt_lines_dict = {k: v for k, v in all_lines.items() if k in written_keys}
-        write_run_export(
+        run_export_summary = write_run_export(
             run_id, payload, rpt_headers, rpt_lines,
             rpt_checks, logger, ai_summary=ai_text, anomalies=rpt_anomalies,
             missing_bring=missing_bring, all_lines_dict=rpt_lines_dict,
         )
     else:
         logger.info("Main", "Step 8: Skipping For_Email export â€” no new invoices.")
+        run_export_summary = None
     write_html_dashboard(logger)
 
     # â”€â”€ Step 9: Email summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -481,6 +570,9 @@ def main():
             check_counts=payload.get("check_counts", {}),
             total_amount=sum(ln.amount or 0.0 for ln in all_invoice_lines),
             log_counts=log_counts,
+            invoices=run_export_summary.invoices if run_export_summary else [],
+            unallocated=run_export_summary.unallocated if run_export_summary else [],
+            pending_items=missing_bring,
         )
     else:
         reason_parts = []

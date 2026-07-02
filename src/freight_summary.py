@@ -43,6 +43,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+from src import config
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATA CONTRACTS  (populate these from your invoice parser)
@@ -378,6 +380,14 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
        bold=True, align="right", fill=_SUB_F, border=_box, fmt=_SEK)
     for col in (5, 6, 7, 8):
         _c(ws, r, col, "", fill=_SUB_F, border=_box)
+    r += 1
+    _tol = config.load_validation_rules().get("reconciliation", {})
+    _tol_ok = _tol.get("total_tolerance_ok", 0.01)
+    _tol_warn = _tol.get("total_tolerance_warning", 1.00)
+    _c(ws, r, 1,
+       f"Avstämning \"OK\" tillåter upp till {_tol_ok:.2f} SEK differens; "
+       f"upp till {_tol_warn:.2f} SEK visas som \"Warning\"; däröver som \"Error\".",
+       size=9, italic=True, color=_GREY)
     r += 2
 
     # ── Pending (incomplete Bring invoice pairs) ──────────────────────────────

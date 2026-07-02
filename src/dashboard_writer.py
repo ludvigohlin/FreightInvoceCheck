@@ -116,6 +116,28 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
         for k, v in svc_agg.items()
     ]
 
+    # ── Cross-check: header total vs. sum of that invoice's own lines ──────────
+    # invoice_header.csv, invoice_lines.csv, and the Excel/summary reports are three
+    # independently-read/aggregated views of the same underlying data (see project
+    # audit notes on triplicated aggregation). This doesn't unify them, but it does
+    # give an early warning in the log if the dashboard's own two CSV reads (header
+    # vs. line-level) ever silently drift apart for the same invoice — which would
+    # otherwise only surface as a controller noticing a wrong number by eye.
+    line_sum_by_inv: dict = defaultdict(float)
+    for line in lines:
+        line_sum_by_inv[line.get("invoice_number", "")] += _safe_float(line.get("amount"))
+    for inv in invoices:
+        inv_no = inv.get("invoice_number", "")
+        header_total = _safe_float(inv.get("total_ex_vat"))
+        line_total = line_sum_by_inv.get(inv_no, 0.0)
+        if abs(header_total - line_total) > 1.0:
+            logger.warning(
+                "DashboardWriter",
+                f"Invoice {inv_no} ({inv.get('carrier','')}): header total_ex_vat "
+                f"({header_total:.2f}) does not match sum of its own invoice_lines.csv "
+                f"rows ({line_total:.2f}) — dashboard/report totals for this invoice may disagree.",
+            )
+
     # ── Surcharge aggregates ──────────────────────────────────────────────────
     sc_agg: dict = defaultdict(lambda: {"total": 0.0, "carrier": "", "year": "", "month": ""})
     for line in surcharges:

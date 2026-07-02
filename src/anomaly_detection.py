@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from collections import Counter
 from dataclasses import dataclass
 from typing import List, Optional
@@ -242,7 +243,11 @@ def detect_bring_anomalies(
 
         # Cost-per-kg outliers within same service category — require BOTH a relative
         # ratio AND an absolute floor to avoid noise. Cap at 10 to prevent token overflow.
+        # Checked both directions: too high (overcharge risk) and too low (a bad
+        # fraktberäknad vikt can also make a line implausibly cheap, which a
+        # one-sided check would never surface).
         _high_cpkg: list[tuple[float, BringInvoiceLine]] = []
+        _low_cpkg: list[tuple[float, BringInvoiceLine]] = []
         for ln in base_lines:
             if ln.weight_kg and ln.weight_kg > 0 and ln.amount:
                 cat = ln.service_category or "Unknown"
@@ -252,6 +257,8 @@ def detect_bring_anomalies(
                     ratio = cost_per_kg / cat_avg
                     if ratio > cost_per_kg_multiplier and cost_per_kg > min_cost_per_kg_absolute:
                         _high_cpkg.append((ratio, ln))
+                    elif ratio < (1.0 / cost_per_kg_multiplier) and cost_per_kg > 0:
+                        _low_cpkg.append((ratio, ln))
         for ratio, ln in sorted(_high_cpkg, key=lambda x: -x[0])[:10]:
             ship_ref = f"Shipment {ln.shipment_number}" if ln.shipment_number else f"Line {ln.line_no}"
             cost_per_kg = ln.amount / ln.weight_kg
@@ -271,6 +278,26 @@ def detect_bring_anomalies(
                 threshold=round(cat_avg * cost_per_kg_multiplier, 2),
                 detail=f"Shipment: {ln.shipment_number} | Service: {ln.service_name_raw} | Weight: {ln.weight_kg} kg",
                 suggested_action="Check if fraktberäknad vikt is correct — volume weight may be inflating the chargeable weight.",
+            ))
+        for ratio, ln in sorted(_low_cpkg, key=lambda x: x[0])[:10]:
+            ship_ref = f"Shipment {ln.shipment_number}" if ln.shipment_number else f"Line {ln.line_no}"
+            cost_per_kg = ln.amount / ln.weight_kg
+            cat = ln.service_category or "Unknown"
+            cat_avg = svc_avg_cpkg.get(cat, 0)
+            anomalies.append(Anomaly(
+                anomaly_type="LowCostPerKg",
+                severity="Info",
+                carrier=carrier,
+                invoice_number=inv_num,
+                description=(
+                    f"{ship_ref} cost/fraktberäknad vikt is only {cost_per_kg:.2f} SEK/kg — "
+                    f"{1/ratio:.1f}x below {cat} average ({cat_avg:.2f} SEK/kg)."
+                ),
+                line_no=ln.line_no,
+                value=round(cost_per_kg, 2),
+                threshold=round(cat_avg / cost_per_kg_multiplier, 2),
+                detail=f"Shipment: {ln.shipment_number} | Service: {ln.service_name_raw} | Weight: {ln.weight_kg} kg",
+                suggested_action="Check if fraktberäknad vikt or weight is correct — an implausibly low rate can mean the wrong weight or service was billed.",
             ))
 
     # ── Negative amounts ──────────────────────────────────────────────────────
@@ -328,6 +355,9 @@ def detect_bring_anomalies(
     # ── Non-Nordic destinations ───────────────────────────────────────────────
     anomalies.extend(detect_non_nordic_destinations(carrier, inv_num, base_lines, logger))
 
+    # ── Price increase vs. historical average ─────────────────────────────────
+    anomalies.extend(detect_price_increase_vs_history(carrier, inv_num, lines, logger))
+
     for a in anomalies:
         log_fn = logger.warning if a.severity in ("Warning", "Error") else logger.info
         log_fn("AnomalyDetection", f"[{a.anomaly_type}] {a.description}")
@@ -353,6 +383,7 @@ def detect_non_nordic_destinations(
     thresholds = config.load_anomaly_thresholds()
     if not thresholds.get("flag_non_nordic_destinations", True):
         return []
+    high_amount = thresholds.get("high_non_nordic_amount", 5000)
 
     foreign: dict[str, list] = defaultdict(list)
     for ln in lines:
@@ -371,9 +402,12 @@ def detect_non_nordic_destinations(
         ]
         sample_ids = [s for s in sample_ids if s][:5]
         sample_str = ", ".join(sample_ids) + (" …" if len(lns) > 5 else "")
+        # Weight severity by amount — a 50 SEK shipment shouldn't compete for
+        # attention with a 45,000 SEK one; only the latter should read as Warning.
+        severity = "Warning" if total_amt >= high_amount else "Info"
         anomalies.append(Anomaly(
             anomaly_type="NonNordicDestination",
-            severity="Warning",
+            severity=severity,
             carrier=carrier,
             invoice_number=invoice_number,
             description=(
@@ -382,10 +416,110 @@ def detect_non_nordic_destinations(
             ),
             detail=f"Country: {country} | Shipments: {sample_str}",
             value=float(len(lns)),
-            threshold=None,
+            threshold=high_amount,
             suggested_action=(
                 "Verify these shipments are intentional — international rates "
                 "may differ significantly from Nordic contract rates."
             ),
         ))
+    return anomalies
+
+
+def _historical_avg_price_by_category(carrier: str, exclude_invoice: str) -> dict:
+    """Read invoice_lines.csv and return {service_category: {"amt": total, "qty": total}}
+    for all previously-written BaseFreight lines of this carrier, excluding the
+    invoice currently being checked. This runs before the current invoice's own
+    lines are written (Step 5 in main.py), so the CSV only ever contains genuinely
+    prior invoices — no need to filter by date."""
+    path = config.INVOICE_LINES_CSV
+    agg: dict = {}
+    if not path.exists():
+        return agg
+    try:
+        with open(path, encoding=config.CSV_ENCODING, newline="") as f:
+            reader = csv.DictReader(f, delimiter=config.CSV_DELIMITER)
+            for row in reader:
+                if row.get("carrier") != carrier:
+                    continue
+                if row.get("invoice_number") == exclude_invoice:
+                    continue
+                if row.get("line_type") != "BaseFreight":
+                    continue
+                cat = row.get("service_category") or "Unknown"
+                try:
+                    amt = float(row.get("amount") or 0.0)
+                    qty = max(float(row.get("quantity") or 1.0), 1.0)
+                except ValueError:
+                    continue
+                d = agg.setdefault(cat, {"amt": 0.0, "qty": 0.0})
+                d["amt"] += amt
+                d["qty"] += qty
+    except Exception:
+        pass
+    return agg
+
+
+def detect_price_increase_vs_history(
+    carrier: str,
+    invoice_number: str,
+    lines: list,
+    logger: ProcessingLogger,
+) -> List[Anomaly]:
+    """
+    Compare this invoice's average price per service category (amount / quantity)
+    against the historical average across previously processed invoices for the
+    same carrier. A gradual or one-off rate increase never trips a single-invoice
+    reconciliation check (PDF and Excel can agree perfectly and still both be
+    wrong relative to the contract), so this is the only place that would catch it.
+    """
+    thresholds = config.load_anomaly_thresholds()
+    if not thresholds.get("flag_price_increase", True):
+        return []
+    max_increase_pct = thresholds.get("max_price_increase_pct", 10.0)
+    min_history_units = thresholds.get("min_price_history_units", 3)
+
+    base_lines = [
+        ln for ln in lines
+        if getattr(ln, "line_type", "") == "BaseFreight" and getattr(ln, "amount", None)
+    ]
+    if not base_lines:
+        return []
+
+    cur_agg: dict = {}
+    for ln in base_lines:
+        cat = getattr(ln, "service_category", None) or "Unknown"
+        qty = max(float(getattr(ln, "quantity", 1) or 1), 1.0)
+        d = cur_agg.setdefault(cat, {"amt": 0.0, "qty": 0.0})
+        d["amt"] += ln.amount
+        d["qty"] += qty
+
+    hist_agg = _historical_avg_price_by_category(carrier, exclude_invoice=invoice_number)
+
+    anomalies: List[Anomaly] = []
+    for cat, d in cur_agg.items():
+        if d["qty"] <= 0:
+            continue
+        cur_avg = d["amt"] / d["qty"]
+        hist = hist_agg.get(cat)
+        if not hist or hist["qty"] < min_history_units:
+            continue  # not enough prior data to trust the baseline
+        hist_avg = hist["amt"] / hist["qty"]
+        if hist_avg <= 0:
+            continue
+        increase_pct = (cur_avg - hist_avg) / hist_avg * 100
+        if increase_pct > max_increase_pct:
+            anomalies.append(Anomaly(
+                anomaly_type="PriceIncreaseVsPreviousInvoice",
+                severity="Warning",
+                carrier=carrier,
+                invoice_number=invoice_number,
+                description=(
+                    f"{cat} average price {cur_avg:.2f} is {increase_pct:.1f}% higher than the "
+                    f"historical average ({hist_avg:.2f}) across previous invoices."
+                ),
+                value=round(cur_avg, 2),
+                threshold=round(hist_avg * (1 + max_increase_pct / 100), 2),
+                detail=f"Historical avg based on {hist['qty']:.0f} unit(s) across prior invoices.",
+                suggested_action="Verify the carrier hasn't changed rates outside the agreed contract.",
+            ))
     return anomalies

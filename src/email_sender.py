@@ -30,15 +30,74 @@ def _log_row(log_counts: dict | None) -> str:
     )
 
 
+def _invoice_action_table(invoices: list) -> str:
+    """HTML table of invoices needing review (status != OK), so the controller
+    doesn't have to open the Excel just to see which invoices to look at."""
+    flagged = [inv for inv in (invoices or []) if getattr(inv, "status", "OK") != "OK"]
+    if not flagged:
+        return ""
+    rows = "".join(
+        f"<tr><td style='padding:3px 8px'>{inv.carrier}</td>"
+        f"<td style='padding:3px 8px'>{inv.number}</td>"
+        f"<td style='padding:3px 8px;text-align:right'>{inv.total_ex_vat:,.2f}</td>"
+        f"<td style='padding:3px 8px;color:{'#c62828' if inv.status == 'Error' else '#e65100'}'>"
+        f"{inv.status}</td>"
+        f"<td style='padding:3px 8px;color:#666;font-size:12px'>{inv.recon_message or ''}</td></tr>"
+        for inv in flagged
+    )
+    return (
+        "<p style='font-size:13px;font-weight:700;color:#333;margin:14px 0 4px'>"
+        "Fakturor som kräver granskning</p>"
+        "<table style='border-collapse:collapse;font-size:12px;width:100%'>"
+        "<tr style='background:#f5f5f5'>"
+        "<th style='padding:3px 8px;text-align:left'>Bolag</th>"
+        "<th style='padding:3px 8px;text-align:left'>Faktura #</th>"
+        "<th style='padding:3px 8px;text-align:right'>Belopp</th>"
+        "<th style='padding:3px 8px;text-align:left'>Status</th>"
+        "<th style='padding:3px 8px;text-align:left'>Att kolla</th></tr>"
+        f"{rows}</table>"
+    )
+
+
+def _unallocated_row(unallocated: list) -> str:
+    """Summarise reconciliation gaps (Avstämningsdifferens) as one visible line,
+    so a small discrepancy doesn't only exist buried in the Excel Avvikelser tab."""
+    if not unallocated:
+        return ""
+    total = sum(getattr(u, "amount", 0.0) or 0.0 for u in unallocated)
+    if total <= 0:
+        return ""
+    return (
+        f'<tr><td style="padding:3px 16px 3px 0;color:#666;font-size:13px">Ej förklarad differens</td>'
+        f'<td style="padding:3px 0;color:#c62828;font-weight:600">'
+        f'{total:,.2f} SEK — se Avvikelser-fliken</td></tr>'
+    )
+
+
+_PENDING_ESCALATE_DAYS = 3
+
+
 def _pending_table(pending_items: list) -> str:
     if not pending_items:
         return ""
-    rows = "".join(
-        f"<tr><td style='padding:3px 8px'>{p.get('invoice_number','')}</td>"
-        f"<td style='padding:3px 8px;color:#666'>{p.get('found_file','')}</td>"
-        f"<td style='padding:3px 8px;color:#c62828'>{p.get('missing_file','')}</td></tr>"
-        for p in pending_items
-    )
+    rows = []
+    for p in pending_items:
+        age = p.get("age_days")
+        if isinstance(age, int) and age >= _PENDING_ESCALATE_DAYS:
+            age_str = f"{age} dagar"
+            age_style = "color:#c62828;font-weight:700"
+        elif isinstance(age, int):
+            age_str = f"{age} dagar"
+            age_style = "color:#666"
+        else:
+            age_str = "–"
+            age_style = "color:#666"
+        rows.append(
+            f"<tr><td style='padding:3px 8px'>{p.get('invoice_number','')}</td>"
+            f"<td style='padding:3px 8px;color:#666'>{p.get('found_file','')}</td>"
+            f"<td style='padding:3px 8px;color:#c62828'>{p.get('missing_file','')}</td>"
+            f"<td style='padding:3px 8px;{age_style}'>{age_str}</td></tr>"
+        )
     return (
         "<p style='font-size:13px;font-weight:700;color:#333;margin:14px 0 4px'>"
         "Inväntar dokument</p>"
@@ -46,8 +105,9 @@ def _pending_table(pending_items: list) -> str:
         "<tr style='background:#f5f5f5'>"
         "<th style='padding:3px 8px;text-align:left'>Faktura</th>"
         "<th style='padding:3px 8px;text-align:left'>Mottaget</th>"
-        "<th style='padding:3px 8px;text-align:left'>Saknas</th></tr>"
-        f"{rows}</table>"
+        "<th style='padding:3px 8px;text-align:left'>Saknas</th>"
+        "<th style='padding:3px 8px;text-align:left'>Väntat sedan</th></tr>"
+        f"{''.join(rows)}</table>"
     )
 
 
@@ -115,6 +175,9 @@ def send_summary_email(
     check_counts: dict,
     total_amount: float,
     log_counts: dict | None = None,
+    invoices: list | None = None,
+    unallocated: list | None = None,
+    pending_items: list | None = None,
 ) -> bool:
     """
     Send a brief email with the Excel approval report attached.
@@ -173,9 +236,12 @@ def send_summary_email(
             f'<span style="color:#c62828">{err_n} Error</span></td></tr>'
             f'<tr><td style="padding:3px 16px 3px 0;color:#666;font-size:13px">Status</td>'
             f'<td style="padding:3px 0;color:{status_color};font-weight:600">{issue_line}</td></tr>'
+            f'{_unallocated_row(unallocated or [])}'
             f'{_log_row(log_counts)}'
             f'</table>'
-            f'<p style="font-size:13px;color:#444;margin:0 0 6px">{attach_note}</p>'
+            f'{_invoice_action_table(invoices or [])}'
+            f'{_pending_table(pending_items or [])}'
+            f'<p style="font-size:13px;color:#444;margin:6px 0 6px">{attach_note}</p>'
             f'<p style="font-size:11px;color:#aaa;margin:20px 0 0">'
             f'Run {run_id} &nbsp;·&nbsp; Freight Invoice Control &nbsp;·&nbsp; Isicom AB</p>'
             f'</body></html>'
