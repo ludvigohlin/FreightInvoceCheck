@@ -281,6 +281,9 @@ def _build_summary_input(
             suggested_action = a.suggested_action or "",
             ai_explanation   = a.claude_explanation or "",
             source           = source,
+            country          = a.country or "",
+            amount           = a.amount or 0.0,
+            shipment_count   = a.shipment_count or 0,
         ))
 
     # Validation issues as anomalies (warnings/errors not already covered by invoice recon)

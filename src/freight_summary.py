@@ -107,6 +107,9 @@ class Anomaly:
     suggested_action: str           # what the reviewer should do
     ai_explanation: str             # AI reasoning (empty string if source == "Regel")
     source: Source                  # "Regel" = caught by rule engine, "AI" = AI escalation
+    country: str = ""               # destination country code, set for NonNordicDestination
+    amount: float = 0.0             # total cost in invoice currency, set for NonNordicDestination
+    shipment_count: int = 0         # shipment count, set for NonNordicDestination
 
 
 @dataclass
@@ -350,6 +353,32 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
     for k, c in enumerate(carriers):
         ws.cell(row=crow0 + k, column=8).value = f"=C{crow0+k}/$C${tot}"
     r = tot + 2
+
+    # ── Non-Nordic destinations ───────────────────────────────────────────────
+    # Ordinary shipping countries are SE/NO/DK/FI; anything else is flagged by
+    # detect_non_nordic_destinations() and surfaced here so cost is visible at
+    # a glance instead of buried as text in the Avvikelser tab.
+    non_nordic = [a for a in d.anomalies if a.anomaly_type == "NonNordicDestination"]
+    if non_nordic:
+        _c(ws, r, 1, "Sändningar utanför Norden (SE/NO/DK/FI)", bold=True, size=11, color=_NAVY)
+        r += 1
+        _hdr(ws, r, ["Leverantör", "Land", "Sändningar", "Kostnad"])
+        r += 1
+        agg: dict[tuple[str, str], dict] = {}
+        for a in non_nordic:
+            key = (a.carrier, a.country or "Unknown")
+            e = agg.setdefault(key, {"shipments": 0, "amount": 0.0})
+            e["shipments"] += a.shipment_count
+            e["amount"] += a.amount
+        for (carrier, country), e in sorted(agg.items(), key=lambda kv: -kv[1]["amount"]):
+            cf = _carrier_fill(carrier)
+            ccy = d.carrier_currency.get(carrier, "SEK")
+            _c(ws, r, 1, carrier, fill=cf, border=_box)
+            _c(ws, r, 2, country, fill=cf, border=_box, align="center")
+            _c(ws, r, 3, e["shipments"], fill=cf, border=_box, align="center", fmt=_INT)
+            _c(ws, r, 4, f"{e['amount']:,.2f} {ccy}", fill=cf, border=_box, align="right")
+            r += 1
+        r += 1
 
     # Invoice table
     _c(ws, r, 1, "Fakturor – status", bold=True, size=11, color=_NAVY)

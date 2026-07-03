@@ -25,6 +25,9 @@ class Anomaly:
     threshold: Optional[float] = None
     suggested_action: str = ""
     claude_explanation: str = ""   # filled in later if Claude is enabled
+    country: str = ""              # destination country code, set by NonNordicDestination
+    amount: Optional[float] = None # total cost in invoice currency, set by NonNordicDestination
+    shipment_count: int = 0        # shipment count, set by NonNordicDestination
 
     def to_dict(self) -> dict:
         return {
@@ -39,6 +42,8 @@ class Anomaly:
             "threshold": self.threshold,
             "suggested_action": self.suggested_action,
             "claude_explanation": self.claude_explanation,
+            "country": self.country,
+            "amount": self.amount,
         }
 
 
@@ -421,6 +426,9 @@ def detect_non_nordic_destinations(
                 "Verify these shipments are intentional — international rates "
                 "may differ significantly from Nordic contract rates."
             ),
+            country=country,
+            amount=total_amt,
+            shipment_count=len(lns),
         ))
     return anomalies
 
