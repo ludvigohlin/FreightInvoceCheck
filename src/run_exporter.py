@@ -114,6 +114,22 @@ def _build_summary_input(
             "OK"
         )
 
+        # Average freight-bearing (chargeable) weight across this invoice's
+        # BaseFreight lines. PostNord lines carry fraktdr_vikt directly; Bring
+        # has no chargeable-weight field, so actual weight_kg is the best
+        # available approximation there.
+        inv_lines_for_wt = (all_lines_dict or {}).get((h.carrier, h.invoice_number), [])
+        weights = []
+        for ln in inv_lines_for_wt:
+            if getattr(ln, "line_type", "") != "BaseFreight":
+                continue
+            w = getattr(ln, "fraktdr_vikt", None)
+            if w is None:
+                w = getattr(ln, "weight_kg", None)
+            if w is not None:
+                weights.append(w)
+        avg_weight_kg = round(sum(weights) / len(weights), 1) if weights else None
+
         invoices.append(Invoice(
             carrier       = h.carrier,
             number        = h.invoice_number or "",
@@ -123,6 +139,7 @@ def _build_summary_input(
             recon_message = recon_msg,
             n_anomalies   = len(inv_anom),
             status        = inv_status,
+            avg_weight_kg = avg_weight_kg,
         ))
 
     # ── Services: aggregate across ALL invoices per (carrier, service_category) ─
@@ -284,6 +301,7 @@ def _build_summary_input(
             country          = a.country or "",
             amount           = a.amount or 0.0,
             shipment_count   = a.shipment_count or 0,
+            shipment_details = getattr(a, "shipment_details", None) or [],
         ))
 
     # Validation issues as anomalies (warnings/errors not already covered by invoice recon)

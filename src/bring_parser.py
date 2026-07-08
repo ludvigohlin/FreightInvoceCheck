@@ -132,6 +132,7 @@ class BringInvoiceLine:
             "to_country": self.to_country,
             "quantity": self.quantity,
             "unit": self.unit,
+            "weight_kg": self.weight_kg,
             "unit_price": self.unit_price,
             "discount_percent": self.discount_percent,
             "vat_type": self.vat_type,
@@ -140,6 +141,10 @@ class BringInvoiceLine:
             "classified_by": self.classified_by,
             "classification_confidence": self.classification_confidence,
             "manual_review_required": self.manual_review_required,
+            "shipment_date": self.received_datetime[:10] if self.received_datetime else "",
+            # Bring bills Parcel by actual weight — weight_kg IS the chargeable
+            # weight (no separate volumetric figure like PostNord's fraktdr_vikt).
+            "chargeable_weight_kg": self.weight_kg,
         }
 
     def to_surcharge_dict(self) -> dict:
@@ -583,6 +588,18 @@ def parse_bring_excel_specification(
         # Invoice number from data row (should match header)
         inv_from_row = str(get("invoice_number_col") or "").strip()
         invoice_number = inv_from_row or spec_header.invoice_number
+
+        # Invoice date from data row — only needed when there's no PDF header to
+        # supply it (spec-only invoices); harmless to also fill it otherwise.
+        if not spec_header.invoice_date:
+            date_from_row = get("invoice_date_col")
+            if date_from_row:
+                if isinstance(date_from_row, datetime):
+                    spec_header.invoice_date = date_from_row.strftime("%Y-%m-%d")
+                else:
+                    parsed_date = parse_date(str(date_from_row))
+                    if parsed_date:
+                        spec_header.invoice_date = parsed_date
 
         # Classification
         classification = _classify_line(

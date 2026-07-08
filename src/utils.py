@@ -107,16 +107,15 @@ def normalize_column_name(name: str) -> str:
 def infer_country_from_postal_code(postal_code: str) -> str:
     """
     Infer country from postal code format.
-    FI-xxxxx → Finland, DK-xxxx → Denmark,
+    XX-xxxxx → the two-letter prefix itself (FI, DK, ES, DE, ...),
     5-digit → Sweden, 4-digit → Norway.
     """
     if postal_code is None:
         return "Unknown"
     s = str(postal_code).strip().replace(" ", "").upper()
-    if s.startswith("FI-"):
-        return "FI"
-    if s.startswith("DK-"):
-        return "DK"
+    m = re.match(r"^([A-Z]{2})-", s)
+    if m:
+        return m.group(1)
     if len(s) == 5 and s.isdigit():
         return "SE"
     if len(s) == 4 and s.isdigit():

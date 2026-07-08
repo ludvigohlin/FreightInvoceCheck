@@ -87,6 +87,10 @@ def load_report_settings() -> dict:
     return _load_json("report_settings.json")
 
 
+def load_bring_pricing_tiers() -> dict:
+    return _load_json("bring_pricing_tiers.json")
+
+
 def ensure_all_directories() -> None:
     """Create all required output and processing directories."""
     dirs = [

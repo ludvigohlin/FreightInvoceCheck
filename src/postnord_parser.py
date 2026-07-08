@@ -30,22 +30,22 @@ from src.utils import parse_swedish_number, parse_date, infer_country_from_posta
 
 # Parcel / Service Point / Parcel Locker — weight/vol/fraktdr columns present
 _PARCEL_RE = re.compile(
-    r"^(PostNord\s+(?:Parcel(?:\s+Locker)?|Service\s+Point))\s+"
-    r"(\d{14,22})\s+"
+    r"^(PostNord\s+(?:Parcel(?:\s+Locker)?|Service\s+Point|Home))\s+"
+    r"(\d{14,22}[A-Z]?)\s+"
     r"(\d+,\d+)\s+(\d+,\d+)\s+(\d+,\d+)\s+"  # weight_kg  vol_m3  fraktdr_vikt (all have commas)
-    r"(FI-\d+|DK-\d+|NO-\d+|\d{5})\s*"        # postal code (SE/FI/DK/NO)
-    r"([A-ZÅÄÖÉÜ][A-ZÅÄÖÉÜÀÂÆŒÇÄÖÜ\s\-]*?)?"  # city (optional, may wrap to next line)
+    r"([A-Z]{2}-\d+|\d{5})\s*"                # postal code (SE, or any "XX-" country-prefixed code)
+    r"([A-ZÅÄÖÉÜ][A-ZÅÄÖÉÜÀÂÆŒÇÄÖÜ\s\-]*?(?:\s[A-Z]{2}-[A-Z]\d+)?)?"  # city (optional, may wrap to next line; may carry a trailing zone code like "SE-A1")
     r"\s*([\d][\d\s\xa0]*,\d{2,})\s*$",        # amount — allow 2+ decimals for PDF artifacts
     re.UNICODE,
 )
 
 # Fallback: Parcel with only weight+vol columns (no fraktdr_vikt)
 _PARCEL_SHORT_RE = re.compile(
-    r"^(PostNord\s+(?:Parcel(?:\s+Locker)?|Service\s+Point))\s+"
-    r"(\d{14,22})\s+"
+    r"^(PostNord\s+(?:Parcel(?:\s+Locker)?|Service\s+Point|Home))\s+"
+    r"(\d{14,22}[A-Z]?)\s+"
     r"(\d+,\d+)\s+(\d+,\d+)\s+"              # weight_kg  vol_m3
-    r"(FI-\d+|DK-\d+|NO-\d+|\d{5})\s*"
-    r"([A-ZÅÄÖÉÜ][A-ZÅÄÖÉÜÀÂÆŒÇÄÖÜ\s\-]*?)?"
+    r"([A-Z]{2}-\d+|\d{5})\s*"
+    r"([A-ZÅÄÖÉÜ][A-ZÅÄÖÉÜÀÂÆŒÇÄÖÜ\s\-]*?(?:\s[A-Z]{2}-[A-Z]\d+)?)?"
     r"\s*([\d][\d\s\xa0]*,\d{2,})\s*$",
     re.UNICODE,
 )
@@ -53,16 +53,25 @@ _PARCEL_SHORT_RE = re.compile(
 # Pallet — no weight/vol/fraktdr columns
 _PALLET_RE = re.compile(
     r"^(PostNord\s+Pallet\s+\S+)\s+"
-    r"(\d{14,22})\s+"
-    r"(FI-\d+|DK-\d+|NO-\d+|\d{5})\s*"
-    r"([A-ZÅÄÖÉÜ][A-ZÅÄÖÉÜÀÂÆŒÇÄÖÜ\s\-]*?)?"
+    r"(\d{14,22}[A-Z]?)\s+"
+    r"([A-Z]{2}-\d+|\d{5})\s*"
+    r"([A-ZÅÄÖÉÜ][A-ZÅÄÖÉÜÀÂÆŒÇÄÖÜ\s\-]*?(?:\s[A-Z]{2}-[A-Z]\d+)?)?"
     r"\s*([\d][\d\s\xa0]*,\d{2,})\s*$",
     re.UNICODE,
 )
 
-# Surcharge/add-on line: text followed by a decimal amount
+# Surcharge/add-on line: text followed by a decimal amount. The amount group
+# deliberately does NOT allow thousands-grouping (no internal space/nbsp) —
+# real per-shipment surcharges are always well under 1000 SEK, and allowing a
+# space inside the digit run causes two kinds of misparse: (1) a tracking
+# number sitting right before the amount (e.g. "Digitalt ändrat förfogande,
+# 00573132901503077322 25,00") gets swallowed into the amount, producing a
+# ~5.7e19 "amount" instead of 25.00; (2) surcharge names that end in a small
+# number, like the "Före 12" (before-noon delivery) service, get their "12"
+# absorbed into the amount ("Före 12 135,00" -> wrongly 12135.00 instead of
+# name "Före 12" + amount 135.00).
 _SURCHARGE_RE = re.compile(
-    r"^(.+?)\s+([\d][\d\s\xa0]*,\d{2})\s*$",
+    r"^(.+?)\s+(\d{1,4},\d{2})\s*$",
     re.UNICODE,
 )
 
@@ -82,6 +91,8 @@ _INV_SURCHARGES = [
      "Svaveltillägg", "Sulphur"),
     (re.compile(r"Valutatillägg\S*\s*\(.*?([\d\s\xa0]+,\d{2})", re.IGNORECASE),
      "Valutatillägg", "Currency"),
+    (re.compile(r"Kredittillägg\S*\s*\(.*?([\d\s\xa0]+,\d{2})", re.IGNORECASE),
+     "Kredittillägg", "Credit"),
 ]
 
 # Lines to skip unconditionally (boilerplate on every spec page + summary markers)
@@ -277,6 +288,7 @@ class PostNordInvoiceLine:
             "to_country": self.to_country,
             "quantity": self.quantity,
             "unit": self.unit,
+            "weight_kg": self.weight_kg,
             "unit_price": self.unit_price,
             "discount_percent": self.discount_percent,
             "vat_type": self.vat_type,
@@ -285,6 +297,12 @@ class PostNordInvoiceLine:
             "classified_by": self.classified_by,
             "classification_confidence": self.classification_confidence,
             "manual_review_required": self.manual_review_required,
+            "shipment_date": self.pickup_date,
+            # PostNord's third weight column on Parcel/Service Point lines — the
+            # actual chargeable ("fraktdragande") weight, which can differ from
+            # the physical weight_kg for bulky-but-light shipments. Not present
+            # on Pallet lines.
+            "chargeable_weight_kg": self.fraktdr_vikt,
         }
 
     def to_surcharge_dict(self) -> dict:
@@ -417,9 +435,12 @@ def _is_swedish_postal(postal: str) -> bool:
 
 
 def _needs_city(postal: str) -> bool:
-    """True if this postal code belongs to a country that has a city on the shipment line."""
-    p = postal.upper()
-    return not p.startswith("FI-") and not p.startswith("DK-") and not p.startswith("NO-")
+    """True if this postal code belongs to a country whose city sometimes wraps to
+    the next line. Only observed for plain Swedish 5-digit postal codes — every
+    country-prefixed code (FI-, DK-, NO-, or any other "XX-" code) either has no
+    city text at all or has it inline, already handled by the shipment regex's
+    own optional city group."""
+    return _is_swedish_postal(postal)
 
 
 def _match_shipment(line: str) -> Optional[Tuple[str, str, Optional[float], Optional[float],

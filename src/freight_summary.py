@@ -38,7 +38,7 @@ DEPENDENCIES
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Optional
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -65,6 +65,9 @@ class Invoice:
     recon_message: str              # human-readable one-liner, shown in "Att kolla"
     n_anomalies: int                # count of anomalies tied to this invoice
     status: Status                  # overall invoice status (worst of recon + anomalies)
+    avg_weight_kg: Optional[float] = None  # avg fraktdragande vikt (chargeable weight)
+                                            # across BaseFreight lines; falls back to
+                                            # actual weight_kg when not available (Bring)
 
 
 @dataclass
@@ -110,6 +113,7 @@ class Anomaly:
     country: str = ""               # destination country code, set for NonNordicDestination
     amount: float = 0.0             # total cost in invoice currency, set for NonNordicDestination
     shipment_count: int = 0         # shipment count, set for NonNordicDestination
+    shipment_details: list = field(default_factory=list)  # per-shipment breakdown, set for NonNordicDestination
 
 
 @dataclass
@@ -167,6 +171,7 @@ _bot  = Border(bottom=_thin)
 _SEK  = '#,##0.00;(#,##0.00);"–"'
 _PCT  = '0.0%'
 _INT  = '#,##0;(#,##0);"–"'
+_KG   = '#,##0.0;(#,##0.0);"–"'
 
 # Carrier colour map — extend as needed
 _CARRIER_FILL = {
@@ -226,7 +231,7 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
     ws = wb.active
     ws.title = "Summary"
     ws.sheet_view.showGridLines = False
-    for i, w in enumerate([20, 16, 13, 18, 14, 12, 12, 48], 1):
+    for i, w in enumerate([20, 16, 13, 18, 14, 12, 12, 14, 48], 1):
         ws.column_dimensions[_scol(i)].width = w
 
     # Title
@@ -360,23 +365,35 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
     # a glance instead of buried as text in the Avvikelser tab.
     non_nordic = [a for a in d.anomalies if a.anomaly_type == "NonNordicDestination"]
     if non_nordic:
-        _c(ws, r, 1, "Sändningar utanför Norden (SE/NO/DK/FI)", bold=True, size=11, color=_NAVY)
+        total_ships = sum(a.shipment_count for a in non_nordic)
+        total_amt   = sum(a.amount for a in non_nordic)
+        _c(ws, r, 1,
+           f"Sändningar utanför Norden (SE/NO/DK/FI) — {total_ships} st, {total_amt:,.2f} totalt",
+           bold=True, size=11, color=_NAVY)
         r += 1
-        _hdr(ws, r, ["Leverantör", "Land", "Sändningar", "Kostnad"])
+        _hdr(ws, r, ["Leverantör", "Faktura #", "Land", "Sändning/Kolli",
+                     "Postnr / Ort", "Vikt (kg)", "Kostnad"])
         r += 1
-        agg: dict[tuple[str, str], dict] = {}
+        # One row per shipment (not just a country total) so it's clear what
+        # each flagged shipment actually is — id, destination, weight, cost.
+        rows = []
         for a in non_nordic:
-            key = (a.carrier, a.country or "Unknown")
-            e = agg.setdefault(key, {"shipments": 0, "amount": 0.0})
-            e["shipments"] += a.shipment_count
-            e["amount"] += a.amount
-        for (carrier, country), e in sorted(agg.items(), key=lambda kv: -kv[1]["amount"]):
+            ccy = d.carrier_currency.get(a.carrier, "SEK")
+            details = a.shipment_details or [
+                {"id": "", "postal": "", "city": "", "weight_kg": None, "amount": a.amount}
+            ]
+            for det in details:
+                rows.append((a.carrier, a.invoice_number, a.country or "Unknown", det, ccy))
+        for carrier, inv_num, country, det, ccy in sorted(rows, key=lambda x: -(x[3]["amount"] or 0.0)):
             cf = _carrier_fill(carrier)
-            ccy = d.carrier_currency.get(carrier, "SEK")
+            loc = " ".join(p for p in (det.get("postal"), det.get("city")) if p) or "–"
             _c(ws, r, 1, carrier, fill=cf, border=_box)
-            _c(ws, r, 2, country, fill=cf, border=_box, align="center")
-            _c(ws, r, 3, e["shipments"], fill=cf, border=_box, align="center", fmt=_INT)
-            _c(ws, r, 4, f"{e['amount']:,.2f} {ccy}", fill=cf, border=_box, align="right")
+            _c(ws, r, 2, inv_num, fill=cf, border=_box, size=9)
+            _c(ws, r, 3, country, fill=cf, border=_box, align="center")
+            _c(ws, r, 4, det.get("id") or "–", fill=cf, border=_box, size=9)
+            _c(ws, r, 5, loc, fill=cf, border=_box, align="center")
+            _c(ws, r, 6, det.get("weight_kg"), fill=cf, border=_box, align="right", fmt=_KG)
+            _c(ws, r, 7, f"{det.get('amount', 0.0):,.2f} {ccy}", fill=cf, border=_box, align="right")
             r += 1
         r += 1
 
@@ -384,9 +401,17 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
     _c(ws, r, 1, "Fakturor – status", bold=True, size=11, color=_NAVY)
     r += 1
     _hdr(ws, r, ["Leverantör", "Faktura #", "Datum", "Belopp ex moms",
-                 "Avstämning", "Avvikelser", "Status", "Att kolla"])
+                 "Avstämning", "Avvikelser", "Status", "Snitt frakvikt (kg)", "Att kolla"])
     r += 1
     inv_sorted = sorted(d.invoices, key=lambda i: i.date or "")
+    weight_vals = [i.avg_weight_kg for i in inv_sorted if i.avg_weight_kg is not None]
+    # Outlier = more than 50% off the median across this run's invoices — colour
+    # the cell so an unusually heavy/light average jumps out without having to
+    # eyeball every row.
+    if len(weight_vals) >= 3:
+        med = sorted(weight_vals)[len(weight_vals) // 2]
+    else:
+        med = None
     for inv in inv_sorted:
         cf = _carrier_fill(inv.carrier)
         sf, st = _status_style(inv.status)
@@ -399,15 +424,20 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
         _c(ws, r, 6, inv.n_anomalies if inv.n_anomalies else None,
            align="center", border=_box, fmt=_INT)
         _c(ws, r, 7, inv.status,      bold=True, align="center", fill=sf, color=st, border=_box)
+        is_outlier = (med and inv.avg_weight_kg is not None
+                      and (inv.avg_weight_kg > med * 1.5 or inv.avg_weight_kg < med * 0.5))
+        wf, wt = (_WARN_F, _WARN_T) if is_outlier else (None, "1A1A1A")
+        _c(ws, r, 8, inv.avg_weight_kg, align="right", border=_box, fmt=_KG,
+           fill=wf, color=wt, bold=is_outlier)
         note = "" if inv.status == "OK" else inv.recon_message
-        _c(ws, r, 8, note,            size=9, color=_GREY, border=_box)
+        _c(ws, r, 9, note,            size=9, color=_GREY, border=_box)
         r += 1
     _c(ws, r, 1, "TOTAL", bold=True, fill=_SUB_F, border=_box)
     _c(ws, r, 2, "", fill=_SUB_F, border=_box)
     _c(ws, r, 3, "", fill=_SUB_F, border=_box)
     _c(ws, r, 4, f"=SUM(D{r-len(d.invoices)}:D{r-1})",
        bold=True, align="right", fill=_SUB_F, border=_box, fmt=_SEK)
-    for col in (5, 6, 7, 8):
+    for col in (5, 6, 7, 8, 9):
         _c(ws, r, col, "", fill=_SUB_F, border=_box)
     r += 1
     _tol = config.load_validation_rules().get("reconciliation", {})

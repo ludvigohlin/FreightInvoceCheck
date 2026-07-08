@@ -81,9 +81,10 @@ INVOICE_HEADER_FIELDS = [
 INVOICE_LINES_FIELDS = [
     "run_id", "processed_timestamp", "carrier", "invoice_number", "source_file",
     "line_no", "article_number", "service_code", "service_name_raw", "service_category",
-    "from_country", "to_country", "quantity", "unit", "unit_price", "discount_percent",
-    "vat_type", "amount", "line_type", "classified_by", "classification_confidence",
-    "manual_review_required",
+    "from_country", "to_country", "quantity", "unit", "weight_kg", "unit_price",
+    "discount_percent", "vat_type", "amount", "line_type", "classified_by",
+    "classification_confidence", "manual_review_required", "shipment_date",
+    "chargeable_weight_kg",
 ]
 
 SURCHARGE_LINES_FIELDS = [

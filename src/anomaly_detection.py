@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from src import config
@@ -28,6 +28,7 @@ class Anomaly:
     country: str = ""              # destination country code, set by NonNordicDestination
     amount: Optional[float] = None # total cost in invoice currency, set by NonNordicDestination
     shipment_count: int = 0        # shipment count, set by NonNordicDestination
+    shipment_details: list = field(default_factory=list)  # per-shipment breakdown, set by NonNordicDestination
 
     def to_dict(self) -> dict:
         return {
@@ -401,11 +402,22 @@ def detect_non_nordic_destinations(
     anomalies: List[Anomaly] = []
     for country, lns in sorted(foreign.items()):
         total_amt = sum(ln.amount or 0.0 for ln in lns)
-        sample_ids = [
-            getattr(ln, "shipment_number", None) or getattr(ln, "kolli_id", None) or ""
-            for ln in lns
-        ]
-        sample_ids = [s for s in sample_ids if s][:5]
+        # Per-shipment breakdown so the report can show what these shipments
+        # actually are, not just a count. Capped at 30 rows/anomaly so a
+        # carrier accidentally going global doesn't blow up the Excel sheet.
+        shipment_details = []
+        for ln in sorted(lns, key=lambda l: -(l.amount or 0.0))[:30]:
+            weight = getattr(ln, "fraktdr_vikt", None)
+            if weight is None:
+                weight = getattr(ln, "weight_kg", None)
+            shipment_details.append({
+                "id":        getattr(ln, "shipment_number", None) or getattr(ln, "kolli_id", None) or "",
+                "postal":    getattr(ln, "to_postal", "") or "",
+                "city":      getattr(ln, "to_city", "") or "",
+                "weight_kg": weight,
+                "amount":    round(ln.amount or 0.0, 2),
+            })
+        sample_ids = [d["id"] for d in shipment_details if d["id"]][:5]
         sample_str = ", ".join(sample_ids) + (" …" if len(lns) > 5 else "")
         # Weight severity by amount — a 50 SEK shipment shouldn't compete for
         # attention with a 45,000 SEK one; only the latter should read as Warning.
@@ -429,6 +441,7 @@ def detect_non_nordic_destinations(
             country=country,
             amount=total_amt,
             shipment_count=len(lns),
+            shipment_details=shipment_details,
         ))
     return anomalies
 

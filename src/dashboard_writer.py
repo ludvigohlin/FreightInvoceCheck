@@ -116,6 +116,30 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
         for k, v in svc_agg.items()
     ]
 
+    # ── Per-line cost data (shipment-date based) ──────────────────────────────
+    # Feeds the Cost timeline chart: each line's cost is bucketed by the day its
+    # shipment actually went out (shipment_date), not the invoice's single
+    # invoice_date — an invoice can bundle shipments sent on many different
+    # days. Falls back to invoice_date for the handful of lines with no
+    # shipment identity of their own (PostNord's invoice-level prorated
+    # Drivmedelstillägg surcharges).
+    line_js = []
+    for line in lines:
+        inv_no = line.get("invoice_number", "")
+        info = inv_lookup.get(inv_no, {})
+        date = line.get("shipment_date", "") or info.get("invoice_date", "") or ""
+        if not date:
+            continue
+        line_js.append({
+            "invoice_no": inv_no,
+            "carrier": line.get("carrier", "") or info.get("carrier", ""),
+            "status": info.get("reconciliation_status", ""),
+            "date": date,
+            "year": date[:4] if len(date) >= 4 else "",
+            "month": date[:7] if len(date) >= 7 else "",
+            "amount": _safe_float(line.get("amount")),
+        })
+
     # ── Cross-check: header total vs. sum of that invoice's own lines ──────────
     # invoice_header.csv, invoice_lines.csv, and the Excel/summary reports are three
     # independently-read/aggregated views of the same underlying data (see project
@@ -220,6 +244,40 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
             "grand_total": round(v["total"] + sc_grand, 2),
         })
 
+    # ── Chargeable weight per Parcel-family service ───────────────────────────
+    # "Fraktdragande vikt" — the weight actually used for billing (Bring bills
+    # Parcel by physical weight; PostNord separately tracks a chargeable figure,
+    # fraktdr_vikt, that can differ from the physical weight_kg). Pallet is
+    # excluded — it's billed by pallet count, weight isn't the pricing driver.
+    weight_agg: dict = defaultdict(lambda: {"weight_sum": 0.0, "count": 0, "carrier": "", "year": "", "month": ""})
+    for line in lines:
+        if line.get("line_type") != "BaseFreight":
+            continue
+        cat = line.get("service_category", "") or ""
+        if cat not in _PAKET_SVC_CATS:
+            continue
+        w = _safe_float(line.get("chargeable_weight_kg"))
+        if not w:
+            continue
+        inv_no = line.get("invoice_number", "")
+        info = inv_lookup.get(inv_no, {})
+        date = line.get("shipment_date", "") or info.get("invoice_date", "") or ""
+        if not date:
+            continue
+        key = (inv_no, cat)
+        weight_agg[key]["weight_sum"] += w
+        weight_agg[key]["count"] += 1
+        weight_agg[key]["carrier"] = line.get("carrier", "") or info.get("carrier", "")
+        weight_agg[key]["year"] = date[:4] if len(date) >= 4 else ""
+        weight_agg[key]["month"] = date[:7] if len(date) >= 7 else ""
+
+    weight_js = [
+        {"invoice_no": k[0], "service_cat": k[1], "carrier": v["carrier"],
+         "year": v["year"], "month": v["month"],
+         "weight_sum": round(v["weight_sum"], 3), "count": v["count"]}
+        for k, v in weight_agg.items()
+    ]
+
     # ── Anomaly JS data ───────────────────────────────────────────────────────
     anomaly_js = [
         {"carrier": a.get("carrier", ""), "invoice_no": a.get("invoice_number", ""),
@@ -254,11 +312,13 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
 
     inv_json       = json.dumps(inv_js)
     svc_json       = json.dumps(svc_js)
+    line_json      = json.dumps(line_js)
     sc_json        = json.dumps(sc_js)
     check_json     = json.dumps(check_js)
     svc_cost_json  = json.dumps(svc_cost_js)
     anomaly_json   = json.dumps(anomaly_js)
     sc_cats_json   = json.dumps(all_sc_cats)
+    weight_json    = json.dumps(weight_js)
 
     html_content = f"""<!DOCTYPE html>
 <html lang="sv">
@@ -338,6 +398,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     .badge-warn{{background:#fff8e1;color:#f57f17}}
     .badge-err{{background:#ffebee;color:#c62828}}
     .badge-pending{{background:#fff3e0;color:#e65100}}
+    .badge-speconly{{background:#ede7f6;color:#5e35b1}}
     .badge-nc{{background:#f5f5f5;color:#9e9e9e}}
 
     .no-data{{color:#bbb;font-style:italic;padding:18px;text-align:center;font-size:13px}}
@@ -454,6 +515,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
       <span style="display:flex;align-items:center;gap:10px">
         <span class="count" id="timelineNote"></span>
         <span class="toggle-grp">
+          <button class="toggle-btn" id="btnDaily" onclick="setGranularity('daily')">Dagsvis</button>
           <button class="toggle-btn active" id="btnMonthly" onclick="setGranularity('monthly')">Månadsvis</button>
           <button class="toggle-btn" id="btnYearly" onclick="setGranularity('yearly')">Årsvis</button>
         </span>
@@ -467,7 +529,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     <div class="card">
       <h2>Snittkostnad per tjänstetyp och månad (inkl. tillägg)
         <span class="count" style="font-size:11px;color:#bbb;font-weight:400">
-          &nbsp;Bring=NOK · PostNord=SEK
+          &nbsp;Bring &amp; PostNord = SEK
         </span>
       </h2>
       <canvas id="avgTrendChart" height="140"></canvas>
@@ -476,6 +538,25 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
       <h2>Tilläggsavgifter <span class="count" id="scCount"></span></h2>
       <canvas id="surchargeChart" height="220"></canvas>
     </div>
+  </div>
+
+  <!-- Chargeable weight per Parcel-family service -->
+  <div class="card">
+    <h2>Fraktdragande snittvikt (Parcel-tjänster)
+      <span class="count" id="weightTrendNote"></span>
+    </h2>
+    <div class="grid-3-2" style="margin-bottom:0">
+      <canvas id="weightTrendChart" height="180"></canvas>
+      <div class="table-wrap">
+        <table id="weightTrendTable">
+          <thead><tr>
+            <th>Tjänst</th><th class="num">Antal</th><th class="num">Snitt (totalt)</th>
+          </tr></thead>
+          <tbody id="weightTrendBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div style="font-size:11px;color:#999;margin-top:8px">Linjer visar 3-månaders rullande snitt. Pall exkluderad (vikt styr inte prissättningen där).</div>
   </div>
 
   <!-- Cost per service table -->
@@ -533,11 +614,13 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
 <script>
 const INV_DATA      = {inv_json};
 const SVC_DATA      = {svc_json};
+const LINE_DATA     = {line_json};
 const SC_DATA       = {sc_json};
 const CHECK_DATA    = {check_json};
 const SVC_COST_DATA = {svc_cost_json};
 const ANOMALY_DATA  = {anomaly_json};
 const ALL_SC_CATS   = {sc_cats_json};
+const WEIGHT_DATA   = {weight_json};
 
 const CC  = {{Bring:'#1565c0', PostNord:'#e65100'}};
 const CCA = {{Bring:'rgba(21,101,192,.72)', PostNord:'rgba(230,81,0,.72)'}};
@@ -545,18 +628,23 @@ function cCol(c)  {{ return CC[c]  || '#546e7a'; }}
 function cColA(c) {{ return CCA[c] || 'rgba(84,110,122,.72)'; }}
 
 function badge(status) {{
-  const map = {{OK:['badge-ok','✓'], Warning:['badge-warn','⚠'],
-                Error:['badge-err','✗'], Pending:['badge-pending','⏳']}};
-  const [cls,icon] = map[status] || ['badge-nc','—'];
-  return `<span class="badge ${{cls}}">${{icon}} ${{esc(status)}}</span>`;
+  const map = {{OK:'badge-ok', Warning:'badge-warn', Error:'badge-err',
+                Pending:'badge-pending', SpecOnly:'badge-speconly'}};
+  const cls = map[status] || 'badge-nc';
+  return `<span class="badge ${{cls}}">${{esc(status)}}</span>`;
 }}
+
+// Only "Pending" (no spec or PDF received at all) is treated as missing data.
+// "SpecOnly" (Bring spec received, PDF invoice never arrived) is treated as a
+// fully usable cost source — we don't wait for the PDF to trust the spec.
+const UNCONFIRMED = new Set(['Pending']);
 function esc(s) {{
   return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }}
 function fmt(n)    {{ return (+n).toLocaleString('sv-SE',{{minimumFractionDigits:2,maximumFractionDigits:2}}); }}
 function fmtInt(n) {{ return Math.round(n).toLocaleString('sv-SE'); }}
 
-let volumeChart, surchargeChart, timelineChart, avgTrendChart;
+let volumeChart, surchargeChart, timelineChart, avgTrendChart, weightTrendChart;
 let _tlGran   = 'monthly';
 let _recFilter = 'all';
 let _showAllInv = false;
@@ -583,21 +671,24 @@ function applyFilters() {{
     (!month   || i.month   === month)  &&
     (!carrier || i.carrier === carrier)&&
     (!invQ    || i.invoice_no.toLowerCase().includes(invQ)) &&
-    (_recFilter !== 'reconciled' || i.status !== 'Pending')
+    (_recFilter !== 'reconciled' || !UNCONFIRMED.has(i.status))
   );
   const filtNos = new Set(filtInv.map(i => i.invoice_no));
 
+  const filtLine    = LINE_DATA.filter(l => filtNos.has(l.invoice_no));
   const filtSvc     = SVC_DATA.filter(s => filtNos.has(s.invoice_no) && (!svc||s.service_cat===svc));
   const filtSc      = SC_DATA.filter(s => filtNos.has(s.invoice_no));
   const filtSvcCost = SVC_COST_DATA.filter(s => filtNos.has(s.invoice_no) && (!svc||s.service_cat===svc));
+  const filtWeight  = WEIGHT_DATA.filter(w => filtNos.has(w.invoice_no) && (!svc||w.service_cat===svc));
   const filtAnom    = ANOMALY_DATA.filter(a => filtNos.has(a.invoice_no));
 
   renderKPIs(filtInv, filtSvc, filtAnom);
   renderRecentInvoices(filtInv);
   renderVolumeChart(filtSvc);
-  renderTimelineChart(filtInv);
+  renderTimelineChart(filtLine);
   renderAvgCostTrendChart(filtSvcCost);
   renderServiceCostTable(filtSvcCost);
+  renderWeightTrendChart(filtWeight);
   renderSurchargeChart(filtSc);
   renderAnomalyTable(filtAnom);
 }}
@@ -613,11 +704,12 @@ function resetFilters() {{
 
 // ── KPIs ──────────────────────────────────────────────────────────────────────
 function renderKPIs(invData, svcData, anomData) {{
-  const reconInv  = invData.filter(i => i.status !== 'Pending');
-  const pendInv   = invData.filter(i => i.status === 'Pending');
+  const reconInv    = invData.filter(i => !UNCONFIRMED.has(i.status));
+  const pendInv     = invData.filter(i => i.status === 'Pending');
   const totalShip = svcData.reduce((s,v) => s+v.count, 0);
 
-  // Group totals by currency (Bring=NOK, PostNord=SEK — must not be summed together)
+  // Group totals by currency (both carriers currently invoice in SEK, but this
+  // stays currency-grouped rather than a flat sum in case that ever changes)
   const byCurrency = {{}};
   reconInv.forEach(i => {{
     const ccy = i.currency || 'SEK';
@@ -662,13 +754,13 @@ function renderKPIs(invData, svcData, anomData) {{
     <div class="kpi blue">
       <div class="value">${{reconInv.length}}</div>
       <div class="label">Fakturor</div>
-      <div class="sub">Avstämda</div>
+      <div class="sub">Med kostnadsdata</div>
     </div>
     ${{pendCard}}
     <div class="kpi blue">
       <div class="value" style="font-size:18px">${{costLines}}</div>
       <div class="label">Total kostnad ex-moms</div>
-      <div class="sub">bekräftade fakturor</div>
+      <div class="sub">spec eller faktura</div>
     </div>
     <div class="kpi grey">
       <div class="value">${{totalShip.toLocaleString('sv-SE')}}</div>
@@ -712,11 +804,12 @@ function renderRecentInvoices(invData) {{
 
   body.innerHTML = shown.map(i => {{
     const pending = i.status === 'Pending';
-    return `<tr class="inv-row${{pending?' pending-row':''}}" onclick="showInvoiceDetail('${{esc(i.invoice_no)}}')">
+    const unconfirmed = UNCONFIRMED.has(i.status);
+    return `<tr class="inv-row${{unconfirmed?' pending-row':''}}" onclick="showInvoiceDetail('${{esc(i.invoice_no)}}')">
       <td style="white-space:nowrap">${{pending?'<em style="color:#ccc">—</em>':esc(i.date)}}</td>
       <td style="white-space:nowrap">${{esc(i.carrier)}}</td>
       <td><strong style="font-size:11px">${{esc(i.invoice_no)}}</strong></td>
-      <td class="num" style="white-space:nowrap">${{fmtInt(i.total)}}${{pending?' <small style="color:#ccc">*</small>':''}}</td>
+      <td class="num" style="white-space:nowrap">${{fmtInt(i.total)}}${{unconfirmed?' <small style="color:#ccc">*</small>':''}}</td>
       <td>${{badge(i.status)}}</td>
     </tr>`;
   }}).join('');
@@ -776,23 +869,24 @@ function renderVolumeChart(svcData) {{
 // ── Timeline chart (grouped bar) ─────────────────────────────────────────────
 function setGranularity(g) {{
   _tlGran = g;
+  document.getElementById('btnDaily').classList.toggle('active',   g==='daily');
   document.getElementById('btnMonthly').classList.toggle('active', g==='monthly');
   document.getElementById('btnYearly').classList.toggle('active',  g==='yearly');
   applyFilters();
 }}
 
-function renderTimelineChart(invData) {{
-  const recon  = invData.filter(i => i.status !== 'Pending');
-  const getKey = i => _tlGran==='yearly' ? i.year : i.month;
+function renderTimelineChart(lineData) {{
+  const recon  = lineData.filter(i => !UNCONFIRMED.has(i.status));
+  const getKey = i => _tlGran==='yearly' ? i.year : (_tlGran==='daily' ? i.date : i.month);
   const labels = [...new Set(recon.map(getKey))].filter(Boolean).sort();
   const cars   = [...new Set(recon.map(i => i.carrier))].sort();
   const datasets = cars.map(c => ({{
     label:c,
-    data: labels.map(lbl=>recon.filter(i=>getKey(i)===lbl&&i.carrier===c).reduce((s,i)=>s+i.total,0)),
+    data: labels.map(lbl=>recon.filter(i=>getKey(i)===lbl&&i.carrier===c).reduce((s,i)=>s+i.amount,0)),
     backgroundColor:cColA(c), borderColor:cCol(c), borderWidth:1,
   }}));
 
-  const unit = _tlGran==='yearly' ? 'år' : 'månad';
+  const unit = _tlGran==='yearly' ? 'år' : (_tlGran==='daily' ? 'dag' : 'månad');
   document.getElementById('timelineNote').textContent =
     labels.length ? `(${{labels.length}} ${{unit}})` : '(ingen data)';
 
@@ -905,6 +999,93 @@ function renderAvgCostTrendChart(filtData) {{
   }}
 }}
 
+// ── Chargeable weight trend per Parcel-family service ──────────────────────────
+function renderWeightTrendChart(filtData) {{
+  const agg={{}};
+  filtData.forEach(w=>{{
+    if(!w.month||!w.count) return;
+    const k=w.month+'||'+w.carrier+'||'+w.service_cat;
+    if(!agg[k]) agg[k]={{month:w.month,carrier:w.carrier,cat:w.service_cat,count:0,sum:0}};
+    agg[k].count+=w.count; agg[k].sum+=w.weight_sum;
+  }});
+  const months=[...new Set(Object.values(agg).map(v=>v.month))].filter(Boolean).sort();
+
+  // Unique (carrier,cat) combos, sorted by total shipment count
+  const seen=new Set(); const combos=[];
+  Object.values(agg).forEach(v=>{{
+    const k=v.carrier+'||'+v.cat;
+    if(!seen.has(k)){{seen.add(k);combos.push({{carrier:v.carrier,cat:v.cat,count:0,sum:0}});}}
+    const c=combos.find(c=>c.carrier===v.carrier&&c.cat===v.cat);
+    c.count+=v.count; c.sum+=v.sum;
+  }});
+  combos.sort((a,b)=>b.count-a.count);
+
+  const DASHES=[[],[6,3],[2,3],[6,2,2,2]];
+  const carIdx={{}};
+  combos.forEach(c=>{{
+    if(carIdx[c.carrier]===undefined) carIdx[c.carrier]=0;
+    c.dashIdx=carIdx[c.carrier]++;
+    c.totalAvg=c.count>0?c.sum/c.count:null;
+  }});
+
+  // Rolling 3-month average per combo per month (trailing window, not an
+  // average-of-averages — months with more shipments weigh more)
+  const datasets=combos.map(c=>{{
+    const color=cCol(c.carrier);
+    const data=months.map((m,i)=>{{
+      const win=months.slice(Math.max(0,i-2),i+1);
+      let wsum=0,wcnt=0;
+      win.forEach(wm=>{{
+        const e=agg[wm+'||'+c.carrier+'||'+c.cat];
+        if(e){{wsum+=e.sum; wcnt+=e.count;}}
+      }});
+      return wcnt>0?Math.round(wsum/wcnt*100)/100:null;
+    }});
+    return {{
+      label:`${{c.carrier}} – ${{c.cat}}`,
+      data, borderColor:color, backgroundColor:color+'18',
+      borderWidth:2, borderDash:DASHES[c.dashIdx]||[],
+      pointRadius:3, tension:.3, spanGaps:true,
+    }};
+  }});
+
+  document.getElementById('weightTrendNote').textContent =
+    months.length ? `(${{months.length}} månad, 3-mån rullande snitt)` : '(ingen data)';
+
+  const body = document.getElementById('weightTrendBody');
+  body.innerHTML = combos.length
+    ? combos.map(c => `<tr>
+        <td>${{esc(c.carrier)}} – ${{esc(c.cat)}}</td>
+        <td class="num">${{c.count.toLocaleString('sv-SE')}}</td>
+        <td class="num">${{c.totalAvg!=null?fmt(c.totalAvg):'–'}} kg</td>
+      </tr>`).join('')
+    : '<tr><td colspan="3" class="no-data">Ingen viktdata.</td></tr>';
+
+  if (weightTrendChart) {{
+    weightTrendChart.data = {{labels:months, datasets}};
+    weightTrendChart.update('active');
+  }} else {{
+    weightTrendChart = new Chart(document.getElementById('weightTrendChart'), {{
+      type:'line',
+      data:{{labels:months, datasets}},
+      options:{{
+        responsive:true,
+        interaction:{{mode:'index',intersect:false}},
+        plugins:{{
+          legend:{{position:'bottom',labels:{{boxWidth:14,font:{{size:11}}}}}},
+          tooltip:{{callbacks:{{label:ctx=>' '+fmt(ctx.parsed.y)+' kg'}}}},
+        }},
+        scales:{{
+          x:{{grid:{{display:false}}}},
+          y:{{beginAtZero:false,
+             ticks:{{callback:v=>v.toLocaleString('sv-SE')+' kg'}},
+             grid:{{color:'#f5f5f5'}}}},
+        }},
+      }},
+    }});
+  }}
+}}
+
 // ── Cost per service table (totals + averages + share) ────────────────────────
 function renderServiceCostTable(filtData) {{
   const agg={{}};
@@ -950,13 +1131,11 @@ function renderAnomalyTable(data) {{
   const body=document.getElementById('anomalyBody');
   if(!data.length){{body.innerHTML='<tr><td colspan="6" class="no-data">Inga avvikelser för valda filter.</td></tr>';return;}}
   const sS={{Warning:'background:#fff8e1;color:#f57f17',Error:'background:#ffebee;color:#c62828',Info:'background:#e3f2fd;color:#1565c0'}};
-  const sI={{Warning:'⚠',Error:'✗',Info:'ℹ'}};
   body.innerHTML=data.map(a=>{{
     const sty=sS[a.severity]||'background:#f5f5f5;color:#333';
-    const ic=sI[a.severity]||'?';
     const exp=a.explanation?`<span style="color:#555">${{esc(a.explanation)}}</span>`:`<span style="color:#ccc;font-style:italic">—</span>`;
     return `<tr><td>${{esc(a.carrier)}}</td><td>${{esc(a.invoice_no)}}</td><td>${{esc(a.type)}}</td>
-      <td><span class="badge" style="${{sty}}">${{ic}} ${{esc(a.severity)}}</span></td>
+      <td><span class="badge" style="${{sty}}">${{esc(a.severity)}}</span></td>
       <td>${{esc(a.description)}}</td><td>${{exp}}</td></tr>`;
   }}).join('');
 }}
@@ -976,17 +1155,19 @@ function showInvoiceDetail(invNo) {{
   if(!inv) return;
   document.getElementById('modalTitle').textContent=`${{inv.carrier}} · Faktura ${{invNo}}`;
   const isPending=inv.status==='Pending';
+  const isSpecOnly=inv.status==='SpecOnly';
 
   const fields=[
     ['Faktura #',invNo],['Transportör',inv.carrier],
     ['Fakturadatum',inv.date||'—'],['Förfallodatum',inv.due_date||'—'],
     ['Kundnummer',inv.customer_number||'—'],['Valuta',inv.currency||'SEK'],
-    ['Total ex-moms', fmt(inv.total)+' SEK'+(isPending?' (spec)':'')],
+    ['Total ex-moms', fmt(inv.total)+' SEK'+(isPending||isSpecOnly?' (spec)':'')],
     ['Moms', inv.vat_amount?fmt(inv.vat_amount)+' SEK':'—'],
     ['Total inkl moms', inv.total_inc_vat?fmt(inv.total_inc_vat)+' SEK':'—'],
     ['Status', badge(inv.status)],['Källfil', esc(inv.source_file||'—')],
   ];
   if(isPending&&inv.pending_note) fields.push(['Notering',esc(inv.pending_note)]);
+  if(isSpecOnly) fields.push(['Notering','Historisk, endast specifikation — PDF kommer aldrig att levereras']);
 
   const infoHtml=`<div class="info-grid">${{fields.map(([l,v])=>
     `<div class="info-item"><div class="ilabel">${{esc(l)}}</div><div class="ivalue">${{v}}</div></div>`

@@ -1,0 +1,6 @@
+{
+  "_comment": "Bring Parcel pricing offer comparison — flat rate vs. staggered/weight-tiered rate. Update when Bring issues a new price offer.",
+  "flat_rate_sek_per_parcel": 92.75,
+  "tier_thresholds_kg": [1, 2, 5, 8, 12, 16, 20, 30, 40, 50],
+  "tier_prices_sek": [81, 82.5, 85, 89, 96.5, 105.5, 119.5, 138, 158, 181.5]
+}
