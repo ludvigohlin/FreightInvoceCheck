@@ -70,6 +70,19 @@ def build_summary_payload(
                 surcharge_totals[cat] = 0.0
             surcharge_totals[cat] += ln.amount or 0.0
 
+    # Returns — PostNord: BaseFreight line shipped back to our own warehouse
+    # (is_return flag). Bring: "Attempted Delivery Return" surcharge line.
+    return_totals: dict = {}
+    for ln in lines:
+        is_pn_return = ln.line_type == "BaseFreight" and getattr(ln, "is_return", False)
+        is_bring_return = ln.line_type == "Surcharge" and (ln.surcharge_category or "") == "Return"
+        if is_pn_return or is_bring_return:
+            d = return_totals.setdefault(ln.carrier, {"count": 0, "total_amount": 0.0})
+            d["count"] += 1
+            d["total_amount"] += ln.amount or 0.0
+    for d in return_totals.values():
+        d["total_amount"] = round(d["total_amount"], 2)
+
     # Check summary
     check_counts = {"OK": 0, "Warning": 0, "Error": 0}
     for c in checks:
@@ -103,6 +116,7 @@ def build_summary_payload(
         "carrier_totals": carrier_totals,
         "service_category_totals": {k: round(v, 2) for k, v in service_totals.items()},
         "surcharge_category_totals": {k: round(v, 2) for k, v in surcharge_totals.items()},
+        "returns": return_totals,
         "check_counts": check_counts,
         "anomaly_count": len(anomalies),
         "anomalies": anomaly_list,
@@ -186,6 +200,27 @@ def write_deterministic_summary(
             md.append(f"| {cat} | {amt:,.2f} ({pct:.1f}% of surcharges) |")
     else:
         md.append("_No surcharge data._")
+    md.append("")
+
+    # ── Returns ────────────────────────────────────────────────────────────────
+    # Detected differently per carrier: PostNord bills a return leg as an
+    # ordinary second BaseFreight charge addressed back to our own warehouse
+    # (is_return flag, set in postnord_parser.py); Bring flags it as an
+    # "Attempted Delivery Return" surcharge line (surcharge_category=="Return")
+    # instead, since it doesn't bill a separate return freight charge.
+    return_totals = payload.get("returns", {})
+    md.append("## Returns")
+    if return_totals:
+        total_ret_n = sum(d["count"] for d in return_totals.values())
+        total_ret_amt = sum(d["total_amount"] for d in return_totals.values())
+        md.append(f"{total_ret_n} return(s) this run, {total_ret_amt:,.2f} total.")
+        md.append("")
+        md.append("| Carrier | Returns | Cost |")
+        md.append("|---------|---------|------|")
+        for carrier, d in sorted(return_totals.items(), key=lambda x: -x[1]["total_amount"]):
+            md.append(f"| {carrier} | {d['count']} | {d['total_amount']:,.2f} |")
+    else:
+        md.append("_No returns in this run._")
     md.append("")
 
     # ── Per-invoice status table ──────────────────────────────────────────────

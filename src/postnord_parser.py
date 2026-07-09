@@ -249,6 +249,11 @@ class PostNordInvoiceLine:
     from_country: str = "SE"
     to_country: str = "SE"
     from_postal: str = "43149"   # IsiCom warehouse
+    # True when a BaseFreight line ships back to our own warehouse postal code —
+    # PostNord bills a return leg as a second, ordinary-looking BaseFreight charge
+    # under the same kolli_id rather than a distinct surcharge (unlike Bring, which
+    # flags returns as an "Attempted Delivery Return" surcharge line).
+    is_return: bool = False
     # service
     service_name_raw: str = ""
     service_category: str = "Unknown"
@@ -303,6 +308,7 @@ class PostNordInvoiceLine:
             # the physical weight_kg for bulky-but-light shipments. Not present
             # on Pallet lines.
             "chargeable_weight_kg": self.fraktdr_vikt,
+            "is_return": self.is_return,
         }
 
     def to_surcharge_dict(self) -> dict:
@@ -570,6 +576,10 @@ def _parse_spec_pages(
                     amount=amount,
                     unit_price=amount,
                 )
+                # A shipment addressed back to our own warehouse postal code is a
+                # return leg, not a real delivery — PostNord bills it as an
+                # ordinary second BaseFreight charge under the same kolli_id.
+                current.is_return = (current.to_postal == current.from_postal)
                 # Determine if city is pending (Swedish/Norwegian postal, city absent)
                 if city == "" and _needs_city(postal):
                     pending_city = True

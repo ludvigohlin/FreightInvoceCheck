@@ -278,6 +278,44 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
         for k, v in weight_agg.items()
     ]
 
+    # ── Returns ────────────────────────────────────────────────────────────────
+    # Detected differently per carrier: PostNord bills a return leg as an
+    # ordinary second BaseFreight charge addressed back to our own warehouse
+    # (is_return flag, set in postnord_parser.py); Bring flags it as an
+    # "Attempted Delivery Return" surcharge line (surcharge_category=="Return")
+    # instead, since it doesn't bill a separate return freight charge.
+    return_js = []
+    for line in lines:
+        if line.get("line_type") != "BaseFreight" or line.get("is_return") != "True":
+            continue
+        inv_no = line.get("invoice_number", "")
+        info = inv_lookup.get(inv_no, {})
+        date = line.get("shipment_date", "") or info.get("invoice_date", "") or ""
+        if not date:
+            continue
+        return_js.append({
+            "invoice_no": inv_no,
+            "carrier": line.get("carrier", "") or info.get("carrier", ""),
+            "date": date, "year": date[:4] if len(date) >= 4 else "",
+            "month": date[:7] if len(date) >= 7 else "",
+            "amount": _safe_float(line.get("amount")),
+        })
+    for sc in surcharges:
+        if (sc.get("surcharge_category") or "") != "Return":
+            continue
+        inv_no = sc.get("invoice_number", "")
+        info = inv_lookup.get(inv_no, {})
+        date = info.get("invoice_date", "") or ""
+        if not date:
+            continue
+        return_js.append({
+            "invoice_no": inv_no,
+            "carrier": sc.get("carrier", "") or info.get("carrier", ""),
+            "date": date, "year": date[:4] if len(date) >= 4 else "",
+            "month": date[:7] if len(date) >= 7 else "",
+            "amount": _safe_float(sc.get("amount")),
+        })
+
     # ── Anomaly JS data ───────────────────────────────────────────────────────
     anomaly_js = [
         {"carrier": a.get("carrier", ""), "invoice_no": a.get("invoice_number", ""),
@@ -319,6 +357,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     anomaly_json   = json.dumps(anomaly_js)
     sc_cats_json   = json.dumps(all_sc_cats)
     weight_json    = json.dumps(weight_js)
+    return_json    = json.dumps(return_js)
 
     html_content = f"""<!DOCTYPE html>
 <html lang="sv">
@@ -489,7 +528,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
   <!-- Charts + Recent invoices -->
   <div class="grid-2-1">
     <div class="card">
-      <h2>Antal försändelser per månad
+      <h2>Antal kolli per månad
         <span class="count" id="volumeNote"></span>
       </h2>
       <canvas id="volumeChart" height="195"></canvas>
@@ -570,6 +609,22 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     </div>
   </div>
 
+  <!-- Returns -->
+  <div class="card">
+    <h2>Returer <span class="count" id="returnsCount"></span></h2>
+    <div class="table-wrap">
+      <table id="returnsTable">
+        <thead><tr>
+          <th>Transportör</th><th>Månad</th><th class="num">Antal</th><th class="num">Kostnad</th>
+        </tr></thead>
+        <tbody id="returnsBody"></tbody>
+      </table>
+    </div>
+    <div style="font-size:11px;color:#999;margin-top:8px">
+      PostNord: sändning till egen lageradress (retur). Bring: avgift för misslyckat leveransförsök/retur.
+    </div>
+  </div>
+
   <!-- Anomalies -->
   <div class="card">
     <h2>Avvikelser <span class="count" id="anomalyCount"></span></h2>
@@ -621,6 +676,7 @@ const SVC_COST_DATA = {svc_cost_json};
 const ANOMALY_DATA  = {anomaly_json};
 const ALL_SC_CATS   = {sc_cats_json};
 const WEIGHT_DATA   = {weight_json};
+const RETURN_DATA   = {return_json};
 
 const CC  = {{Bring:'#1565c0', PostNord:'#e65100'}};
 const CCA = {{Bring:'rgba(21,101,192,.72)', PostNord:'rgba(230,81,0,.72)'}};
@@ -681,8 +737,9 @@ function applyFilters() {{
   const filtSvcCost = SVC_COST_DATA.filter(s => filtNos.has(s.invoice_no) && (!svc||s.service_cat===svc));
   const filtWeight  = WEIGHT_DATA.filter(w => filtNos.has(w.invoice_no) && (!svc||w.service_cat===svc));
   const filtAnom    = ANOMALY_DATA.filter(a => filtNos.has(a.invoice_no));
+  const filtReturn  = RETURN_DATA.filter(r => filtNos.has(r.invoice_no));
 
-  renderKPIs(filtInv, filtSvc, filtAnom);
+  renderKPIs(filtInv, filtSvc, filtAnom, filtReturn);
   renderRecentInvoices(filtInv);
   renderVolumeChart(filtSvc);
   renderTimelineChart(filtLine);
@@ -691,6 +748,7 @@ function applyFilters() {{
   renderWeightTrendChart(filtWeight);
   renderSurchargeChart(filtSc);
   renderAnomalyTable(filtAnom);
+  renderReturnsTable(filtReturn);
 }}
 
 function resetFilters() {{
@@ -703,7 +761,7 @@ function resetFilters() {{
 }}
 
 // ── KPIs ──────────────────────────────────────────────────────────────────────
-function renderKPIs(invData, svcData, anomData) {{
+function renderKPIs(invData, svcData, anomData, returnData) {{
   const reconInv    = invData.filter(i => !UNCONFIRMED.has(i.status));
   const pendInv     = invData.filter(i => i.status === 'Pending');
   const totalShip = svcData.reduce((s,v) => s+v.count, 0);
@@ -750,6 +808,8 @@ function renderKPIs(invData, svcData, anomData) {{
       <div class="sub">Inväntar dokument</div>
     </div>` : '';
 
+  const returnCost = returnData.reduce((s,r) => s+r.amount, 0);
+
   document.getElementById('kpiRow').innerHTML = `
     <div class="kpi blue">
       <div class="value">${{reconInv.length}}</div>
@@ -764,7 +824,7 @@ function renderKPIs(invData, svcData, anomData) {{
     </div>
     <div class="kpi grey">
       <div class="value">${{totalShip.toLocaleString('sv-SE')}}</div>
-      <div class="label">Försändelser</div>
+      <div class="label">Kolli</div>
       <div class="sub">alla tjänstetyper</div>
     </div>
     <div class="kpi ${{anomCls}}">
@@ -776,6 +836,11 @@ function renderKPIs(invData, svcData, anomData) {{
       <div class="value" style="font-size:16px">${{scPctLines}}</div>
       <div class="label">Tillägg av total</div>
       <div class="sub">bränsle + övriga</div>
+    </div>
+    <div class="kpi orange">
+      <div class="value">${{returnData.length.toLocaleString('sv-SE')}}</div>
+      <div class="label">Returer</div>
+      <div class="sub">${{fmtInt(returnCost)}} SEK</div>
     </div>
   `;
 }}
@@ -826,9 +891,14 @@ function renderRecentInvoices(invData) {{
   }}
 }}
 
-// ── Volume chart — shipments per month per carrier ────────────────────────────
+// ── Volume chart — kolli per month per carrier ─────────────────────────────────
+// NOTE: this counts kolli (rows), not distinct sändningar/försändelser — the
+// exported CSVs don't carry a shipment_number column, so there's no way to
+// deduplicate multi-kolli shipments down to a true shipment count here (see
+// src/run_exporter.py for where that distinction exists, in-memory only, for
+// the Excel report's Sändningar column).
 function renderVolumeChart(svcData) {{
-  // Aggregate shipment counts by (month, carrier) from SVC_DATA
+  // Aggregate kolli counts by (month, carrier) from SVC_DATA
   const agg = {{}};
   svcData.forEach(s => {{
     const k = s.month + '||' + s.carrier;
@@ -1010,7 +1080,7 @@ function renderWeightTrendChart(filtData) {{
   }});
   const months=[...new Set(Object.values(agg).map(v=>v.month))].filter(Boolean).sort();
 
-  // Unique (carrier,cat) combos, sorted by total shipment count
+  // Unique (carrier,cat) combos, sorted by total kolli count
   const seen=new Set(); const combos=[];
   Object.values(agg).forEach(v=>{{
     const k=v.carrier+'||'+v.cat;
@@ -1029,7 +1099,7 @@ function renderWeightTrendChart(filtData) {{
   }});
 
   // Rolling 3-month average per combo per month (trailing window, not an
-  // average-of-averages — months with more shipments weigh more)
+  // average-of-averages — months with more kolli weigh more)
   const datasets=combos.map(c=>{{
     const color=cCol(c.carrier);
     const data=months.map((m,i)=>{{
@@ -1123,6 +1193,26 @@ function renderServiceCostTable(filtData) {{
     <td class="num">${{fmt(grandTotal)}}</td>
     <td class="num">100.0%</td>
     <td colspan="3" class="num">—</td></tr>`;
+}}
+
+// ── Returns table (per carrier per month) ──────────────────────────────────────
+function renderReturnsTable(filtData) {{
+  const agg={{}};
+  filtData.forEach(r=>{{
+    const k=r.carrier+'||'+r.month;
+    if(!agg[k]) agg[k]={{carrier:r.carrier,month:r.month,count:0,amount:0}};
+    agg[k].count+=1; agg[k].amount+=r.amount;
+  }});
+  const rows=Object.values(agg).sort((a,b)=> (b.month||'').localeCompare(a.month||'') || b.amount-a.amount);
+  const totalCount=filtData.length;
+  const totalAmt=filtData.reduce((s,r)=>s+r.amount,0);
+  document.getElementById('returnsCount').textContent=totalCount?`(${{totalCount}} st, ${{fmt(totalAmt)}} SEK)`:'';
+  document.getElementById('returnsBody').innerHTML = rows.length
+    ? rows.map(r=>`<tr>
+        <td>${{esc(r.carrier)}}</td><td>${{esc(r.month)||'–'}}</td>
+        <td class="num">${{r.count.toLocaleString('sv-SE')}}</td>
+        <td class="num">${{fmt(r.amount)}}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="no-data">Inga returer.</td></tr>';
 }}
 
 // ── Anomaly table ─────────────────────────────────────────────────────────────

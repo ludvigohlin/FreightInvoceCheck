@@ -128,6 +128,20 @@ class ServiceSurcharge:
 
 
 @dataclass
+class ReturnStat:
+    """Count and cost of return shipments, aggregated per carrier.
+
+    Detected differently per carrier: PostNord bills a return leg as an
+    ordinary second BaseFreight charge addressed back to our own warehouse
+    (is_return flag on the line); Bring flags it as an "Attempted Delivery
+    Return" surcharge line (surcharge_category == "Return") instead.
+    """
+    carrier: str
+    count: int
+    total_amount: float
+
+
+@dataclass
 class Pending:
     """Bring invoice where only one of the two required files has arrived."""
     invoice_number: str
@@ -148,6 +162,7 @@ class SummaryInput:
     service_surcharges: list[ServiceSurcharge] = field(default_factory=list)
     carrier_currency: dict[str, str] = field(default_factory=dict)  # carrier -> "SEK"/"NOK"/etc.
     pending: list[Pending] = field(default_factory=list)
+    returns: list[ReturnStat] = field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -397,6 +412,25 @@ def _build_attest(wb: Workbook, d: SummaryInput, carriers: list[str],
             r += 1
         r += 1
 
+    # ── Returns ────────────────────────────────────────────────────────────────
+    active_returns = [rs for rs in d.returns if rs.count]
+    if active_returns:
+        total_ret_count = sum(rs.count for rs in active_returns)
+        total_ret_amt   = sum(rs.total_amount for rs in active_returns)
+        _c(ws, r, 1, f"Returer — {total_ret_count} st, {total_ret_amt:,.2f} totalt",
+           bold=True, size=11, color=_NAVY)
+        r += 1
+        _hdr(ws, r, ["Leverantör", "Antal returer", "Kostnad"])
+        r += 1
+        for rs in sorted(active_returns, key=lambda x: -x.total_amount):
+            cf  = _carrier_fill(rs.carrier)
+            ccy = d.carrier_currency.get(rs.carrier, "SEK")
+            _c(ws, r, 1, rs.carrier, fill=cf, border=_box)
+            _c(ws, r, 2, rs.count,   align="right", fill=cf, border=_box, fmt=_INT)
+            _c(ws, r, 3, f"{rs.total_amount:,.2f} {ccy}", align="right", fill=cf, border=_box)
+            r += 1
+        r += 1
+
     # Invoice table
     _c(ws, r, 1, "Fakturor – status", bold=True, size=11, color=_NAVY)
     r += 1
@@ -486,9 +520,11 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
     _c(ws, 2, 1, "En rad per tjänstetyp. Tillägg fördelade per tjänst.", size=9, color=_GREY)
 
     # Columns: Tjänst | Sändningar | Kolli | Basfrakt | Bränsle | Övr. tillägg | Total |
-    #          Snitt Basfrakt | Snitt Bränsle | Snitt Övr. tillägg | Snitt/sändning (all "Snitt" per sändning)
+    #          Snitt Basfrakt | Snitt Bränsle | Snitt Övr. tillägg | Snitt/kolli (all "Snitt" per kolli/pall)
     # Currency label is set per carrier section from carrier_currency.
     # Kolli > Sändningar for Bring (multi-kolli shipments); equal for PostNord (1 kolli = 1 sändning).
+    # All "Snitt" averages divide by kolli (the billed unit), not sändningar, so a multi-kolli
+    # shipment doesn't understate the true per-package/per-pall cost.
     WIDTHS = [24, 12, 10, 16, 14, 16, 16, 16, 16, 16, 18]
     NC = 11
 
@@ -500,7 +536,7 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
         COLS = ["Tjänst", "Sändningar", "Kolli", f"Basfrakt ({ccy})", f"Bränsle ({ccy})",
                 f"Övr. tillägg ({ccy})", f"Total ({ccy})",
                 f"Snitt basfrakt ({ccy})", f"Snitt bränsle ({ccy})", f"Snitt övr. tillägg ({ccy})",
-                f"Snitt / sändning ({ccy})"]
+                f"Snitt / kolli ({ccy})"]
 
         # Index service-level surcharges (those that could be attributed to a service type)
         svc_fuel: dict[str, float] = {}
@@ -539,11 +575,14 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
             fuel   = svc_fuel.get(svc.service_name, 0.0)
             other  = svc_other.get(svc.service_name, 0.0)
             total  = svc.total_ex_vat + fuel + other
+            # Averages are per kolli/pall (the physical unit billed), not per sändning —
+            # a sändning can bundle several kolli/pall under one shipment number, which
+            # would understate the true per-unit cost if divided by shipments instead.
             kolli  = svc.packages if svc.packages else svc.shipments
-            avg_base  = svc.total_ex_vat / svc.shipments if svc.shipments else 0.0
-            avg_fuel  = fuel  / svc.shipments if svc.shipments else 0.0
-            avg_other = other / svc.shipments if svc.shipments else 0.0
-            avg_s     = total / svc.shipments if svc.shipments else 0.0
+            avg_base  = svc.total_ex_vat / kolli if kolli else 0.0
+            avg_fuel  = fuel  / kolli if kolli else 0.0
+            avg_other = other / kolli if kolli else 0.0
+            avg_s     = total / kolli if kolli else 0.0
 
             _c(ws, r, 1, svc.service_name, fill=cf, border=_box)
             _c(ws, r, 2, svc.shipments,    align="right", fill=cf, border=_box, fmt=_INT)
@@ -553,10 +592,10 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
             _c(ws, r, 5, fuel  if fuel  else None, align="right", fill=cf, border=_box, fmt=_SEK)
             _c(ws, r, 6, other if other else None, align="right", fill=cf, border=_box, fmt=_SEK)
             _c(ws, r, 7, total,            align="right", fill=cf, border=_box, fmt=_SEK, bold=True)
-            _c(ws, r, 8, avg_base if svc.shipments else None, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 8, avg_base if kolli else None, align="right", fill=cf, border=_box, fmt=_SEK)
             _c(ws, r, 9, avg_fuel if fuel else None, align="right", fill=cf, border=_box, fmt=_SEK)
             _c(ws, r, 10, avg_other if other else None, align="right", fill=cf, border=_box, fmt=_SEK)
-            _c(ws, r, 11, avg_s if svc.shipments else None, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 11, avg_s if kolli else None, align="right", fill=cf, border=_box, fmt=_SEK)
             r += 1
 
         # Invoice-level (unattributed) surcharges — shown as separate row

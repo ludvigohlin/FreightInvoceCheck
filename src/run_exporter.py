@@ -12,7 +12,7 @@ from src.processing_logger import ProcessingLogger
 from src.freight_summary import (
     build_summary, SummaryInput,
     Invoice, Service, Surcharge, Anomaly as SummaryAnomaly, Unallocated, ServiceSurcharge,
-    Pending as SummaryPending,
+    Pending as SummaryPending, ReturnStat,
 )
 
 
@@ -285,6 +285,28 @@ def _build_summary_input(
             is_unknown    = sc_cat == "Unknown",
         ))
 
+    # ── Returns (detected differently per carrier) ───────────────────────────
+    # PostNord: BaseFreight line explicitly flagged is_return=True (shipped
+    # back to our own warehouse postal code — see postnord_parser.py). Bring:
+    # a "Return" surcharge line ("Attempted Delivery Return") tacked onto the
+    # original delivery, since Bring doesn't bill a separate return freight
+    # charge the way PostNord does.
+    return_agg: dict = defaultdict(lambda: {"count": 0, "total": 0.0})
+    for (carrier, inv_num), inv_lines in (all_lines_dict or {}).items():
+        for ln in inv_lines:
+            if getattr(ln, "line_type", "") == "BaseFreight" and getattr(ln, "is_return", False):
+                return_agg[carrier]["count"] += 1
+                return_agg[carrier]["total"] += getattr(ln, "amount", 0.0) or 0.0
+            elif (getattr(ln, "line_type", "") == "Surcharge"
+                  and getattr(ln, "surcharge_category", "") == "Return"):
+                return_agg[carrier]["count"] += 1
+                return_agg[carrier]["total"] += getattr(ln, "amount", 0.0) or 0.0
+
+    returns = [
+        ReturnStat(carrier=carrier, count=d["count"], total_amount=round(d["total"], 2))
+        for carrier, d in sorted(return_agg.items())
+    ]
+
     # ── Anomalies ─────────────────────────────────────────────────────────────
     summary_anomalies: list[SummaryAnomaly] = []
     for a in (anomalies or []):
@@ -344,6 +366,7 @@ def _build_summary_input(
         service_surcharges = service_surcharges,
         carrier_currency   = carrier_currency,
         pending            = pending_items,
+        returns            = returns,
     )
 
 
