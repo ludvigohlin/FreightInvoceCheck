@@ -310,10 +310,6 @@ def main():
 
         all_invoice_lines.extend(lines)
 
-        # Anomaly detection per invoice
-        anomalies = detect_bring_anomalies(pdf_h, xls_h, lines, logger)
-        all_anomalies.extend(anomalies)
-
     # Collect PostNord headers and lines + geographic anomaly check
     for (carrier, inv_num), h in all_pdf_headers.items():
         if carrier == "PostNord":
@@ -400,6 +396,18 @@ def main():
                 ln.manual_review_required = bool(result.get("should_review_manually", True))
         else:
             logger.info("Main", "Step 3d: All lines classified by rules â€” no AI needed.")
+
+    # â”€â”€ Bring anomaly detection (runs after Step 3d so classification results are
+    #    final â€” otherwise UnknownServiceCategory/UnknownSurchargeCategory anomalies
+    #    could report lines as unclassified even though Claude went on to classify
+    #    them a moment later) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    for inv_num in bring_invoice_numbers:
+        pdf_h = all_pdf_headers.get(("Bring", inv_num))
+        xls_h = all_excel_headers.get(("Bring", inv_num))
+        if pdf_h is None or xls_h is None:
+            continue
+        lines = all_lines.get(("Bring", inv_num), [])
+        all_anomalies.extend(detect_bring_anomalies(pdf_h, xls_h, lines, logger))
 
     # â”€â”€ Optional: Claude anomaly explanations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if is_claude_enabled() and all_anomalies:

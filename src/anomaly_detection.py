@@ -334,8 +334,19 @@ def detect_bring_anomalies(
         ))
 
     # ── Unknown classifications ───────────────────────────────────────────────
+    # NOTE: this runs after Step 3d's AI classification pass in main.py, so
+    # classified_by reflects what actually happened — if Claude already tried
+    # and still returned Unknown, telling the user to "enable Claude API" is
+    # wrong and misleading; the real ask is a new rule or manual review.
     unknown_service = [ln for ln in lines if ln.service_category == "Unknown"]
     if unknown_service:
+        tried_claude = any(getattr(ln, "classified_by", "") == "Claude" for ln in unknown_service)
+        action = (
+            "Claude API already attempted classification for these line(s) and returned low "
+            "confidence — add an explicit service classification rule, or review manually."
+            if tried_claude else
+            "Add service classification rules or enable Claude API for ambiguous classification."
+        )
         anomalies.append(Anomaly(
             anomaly_type="UnknownServiceCategory",
             severity="Warning",
@@ -343,11 +354,18 @@ def detect_bring_anomalies(
             invoice_number=inv_num,
             description=f"{len(unknown_service)} line(s) could not be classified into a known service_category.",
             value=float(len(unknown_service)),
-            suggested_action="Add service classification rules or enable Claude API for ambiguous classification.",
+            suggested_action=action,
         ))
 
     unknown_surcharge = [ln for ln in surcharge_lines if ln.surcharge_category == "Unknown"]
     if unknown_surcharge:
+        tried_claude = any(getattr(ln, "classified_by", "") == "Claude" for ln in unknown_surcharge)
+        action = (
+            "Claude API already attempted classification for these line(s) and returned low "
+            "confidence — add an explicit surcharge classification rule, or review manually."
+            if tried_claude else
+            "Add surcharge classification rules or enable Claude API."
+        )
         anomalies.append(Anomaly(
             anomaly_type="UnknownSurchargeCategory",
             severity="Warning",
@@ -355,7 +373,7 @@ def detect_bring_anomalies(
             invoice_number=inv_num,
             description=f"{len(unknown_surcharge)} surcharge line(s) could not be classified.",
             value=float(len(unknown_surcharge)),
-            suggested_action="Add surcharge classification rules or enable Claude API.",
+            suggested_action=action,
         ))
 
     # ── Non-Nordic destinations ───────────────────────────────────────────────
