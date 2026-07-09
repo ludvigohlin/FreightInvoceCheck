@@ -309,6 +309,8 @@ class PostNordInvoiceLine:
             # on Pallet lines.
             "chargeable_weight_kg": self.fraktdr_vikt,
             "is_return": self.is_return,
+            "to_postal": self.to_postal,
+            "to_city": self.to_city,
         }
 
     def to_surcharge_dict(self) -> dict:

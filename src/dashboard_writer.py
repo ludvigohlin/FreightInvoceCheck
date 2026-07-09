@@ -284,6 +284,33 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     # (is_return flag, set in postnord_parser.py); Bring flags it as an
     # "Attempted Delivery Return" surcharge line (surcharge_category=="Return")
     # instead, since it doesn't bill a separate return freight charge.
+    #
+    # For PostNord we can also say more: `service_code` carries the PDF's own
+    # kolli_id (a real, stable shipment identifier), so grouping all of a
+    # kolli's BaseFreight lines — across every invoice it ever appears on —
+    # lets us show where a returned parcel was originally headed, and detect
+    # the rare case where the same kolli has bounced back more than once.
+    kolli_history: dict = defaultdict(list)
+    for line in lines:
+        if line.get("carrier") != "PostNord" or line.get("line_type") != "BaseFreight":
+            continue
+        kolli_id = line.get("service_code", "")
+        if not kolli_id:
+            continue
+        inv_no = line.get("invoice_number", "")
+        info = inv_lookup.get(inv_no, {})
+        date = line.get("shipment_date", "") or info.get("invoice_date", "") or ""
+        kolli_history[kolli_id].append({
+            "date": date,
+            "postal": line.get("to_postal", ""),
+            "city": line.get("to_city", ""),
+            "is_return": line.get("is_return") == "True",
+            "invoice_no": inv_no,
+            "amount": _safe_float(line.get("amount")),
+        })
+    for hist in kolli_history.values():
+        hist.sort(key=lambda h: h["date"])
+
     return_js = []
     for line in lines:
         if line.get("line_type") != "BaseFreight" or line.get("is_return") != "True":
@@ -293,12 +320,25 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
         date = line.get("shipment_date", "") or info.get("invoice_date", "") or ""
         if not date:
             continue
+        kolli_id = line.get("service_code", "")
+        hist = kolli_history.get(kolli_id, [])
+        repeat_count = sum(1 for h in hist if h["is_return"]) or 1
+        # Most recent non-return (outbound) destination strictly before this
+        # return's own date — i.e. where it was actually being delivered.
+        origin = None
+        for h in hist:
+            if not h["is_return"] and h["date"] and h["date"] < date:
+                origin = h
+        origin_label = f"{origin['postal']} {origin['city']}".strip() if origin else ""
         return_js.append({
             "invoice_no": inv_no,
             "carrier": line.get("carrier", "") or info.get("carrier", ""),
             "date": date, "year": date[:4] if len(date) >= 4 else "",
             "month": date[:7] if len(date) >= 7 else "",
             "amount": _safe_float(line.get("amount")),
+            "kolli_id": kolli_id,
+            "origin": origin_label,
+            "repeat_count": repeat_count,
         })
     for sc in surcharges:
         if (sc.get("surcharge_category") or "") != "Return":
@@ -314,7 +354,14 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
             "date": date, "year": date[:4] if len(date) >= 4 else "",
             "month": date[:7] if len(date) >= 7 else "",
             "amount": _safe_float(sc.get("amount")),
+            "kolli_id": "", "origin": "", "repeat_count": 1,
         })
+
+    # Only export history for kolli_ids that actually show up in a return —
+    # exporting all ~14k PostNord kolli would bloat the dashboard for no
+    # benefit, since this is only ever looked up from a return-detail click.
+    returned_kolli_ids = {r["kolli_id"] for r in return_js if r.get("kolli_id")}
+    kolli_history_js = {k: v for k, v in kolli_history.items() if k in returned_kolli_ids}
 
     # ── Anomaly JS data ───────────────────────────────────────────────────────
     anomaly_js = [
@@ -358,6 +405,7 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     sc_cats_json   = json.dumps(all_sc_cats)
     weight_json    = json.dumps(weight_js)
     return_json    = json.dumps(return_js)
+    kolli_history_json = json.dumps(kolli_history_js)
 
     html_content = f"""<!DOCTYPE html>
 <html lang="sv">
@@ -455,11 +503,6 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
 
     /* Recent invoices card */
     #recentInvBody tr.pending-row td{{opacity:.75}}
-    .show-more-btn{{display:block;width:100%;padding:8px;border:none;
-                    background:#f5f9ff;color:#1565c0;font-size:12px;font-weight:700;
-                    cursor:pointer;border-top:1px solid #e0e0e0;border-radius:0 0 6px 6px;
-                    text-align:center;letter-spacing:.3px}}
-    .show-more-btn:hover{{background:#e3f2fd}}
 
     /* Modal */
     .modal-overlay{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
@@ -473,6 +516,13 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
     .modal-close{{background:none;border:none;color:#fff;font-size:22px;
                   cursor:pointer;line-height:1;padding:0 4px}}
     .modal-close:hover{{opacity:.7}}
+    .modal-back{{background:none;border:1px solid rgba(255,255,255,.5);color:#fff;
+                 font-size:12px;font-weight:600;cursor:pointer;padding:4px 10px;
+                 border-radius:5px;margin-right:10px}}
+    .modal-back:hover{{background:rgba(255,255,255,.15)}}
+    .copy-btn{{background:#eef4fb;border:1px solid #d0dced;color:#1565c0;font-size:10px;
+               font-weight:700;cursor:pointer;padding:1px 7px;border-radius:4px;margin-left:6px}}
+    .copy-btn:hover{{background:#dceafd}}
     .modal-body{{padding:20px;overflow-y:auto;max-height:76vh}}
     .modal-section{{margin-bottom:18px}}
     .modal-section h4{{font-size:11px;font-weight:700;color:#1565c0;
@@ -531,11 +581,11 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
       <h2>Antal kolli per månad
         <span class="count" id="volumeNote"></span>
       </h2>
-      <canvas id="volumeChart" height="195"></canvas>
+      <div style="height:320px"><canvas id="volumeChart"></canvas></div>
     </div>
-    <div class="card" style="display:flex;flex-direction:column">
+    <div class="card">
       <h2>Senaste fakturor <span class="count" id="recentInvCount"></span></h2>
-      <div style="flex:1;overflow:hidden;border-radius:6px;border:1px solid #e8e8e8">
+      <div style="height:320px;overflow-y:auto;border-radius:6px;border:1px solid #e8e8e8">
         <table id="recentInvTable" style="font-size:12px">
           <thead><tr>
             <th>Datum</th><th>Transp.</th><th>Faktura #</th>
@@ -543,7 +593,6 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
           </tr></thead>
           <tbody id="recentInvBody"></tbody>
         </table>
-        <button class="show-more-btn" id="showMoreBtn" onclick="toggleAllInvoices()"></button>
       </div>
     </div>
   </div>
@@ -659,7 +708,10 @@ def write_html_dashboard(logger: ProcessingLogger) -> None:
 <div class="modal-overlay" id="modalOverlay" onclick="closeModalOnBg(event)">
   <div class="modal" id="modalBox">
     <div class="modal-header">
-      <h3 id="modalTitle">Fakturadetaljer</h3>
+      <div style="display:flex;align-items:center">
+        <button class="modal-back" id="modalBackBtn" onclick="modalGoBack()" style="display:none">&#x2190; Tillbaka</button>
+        <h3 id="modalTitle">Fakturadetaljer</h3>
+      </div>
       <button class="modal-close" onclick="closeModal()">&#x2715;</button>
     </div>
     <div class="modal-body" id="modalBody"></div>
@@ -677,6 +729,7 @@ const ANOMALY_DATA  = {anomaly_json};
 const ALL_SC_CATS   = {sc_cats_json};
 const WEIGHT_DATA   = {weight_json};
 const RETURN_DATA   = {return_json};
+const KOLLI_HISTORY = {kolli_history_json};
 
 const CC  = {{Bring:'#1565c0', PostNord:'#e65100'}};
 const CCA = {{Bring:'rgba(21,101,192,.72)', PostNord:'rgba(230,81,0,.72)'}};
@@ -703,8 +756,6 @@ function fmtInt(n) {{ return Math.round(n).toLocaleString('sv-SE'); }}
 let volumeChart, surchargeChart, timelineChart, avgTrendChart, weightTrendChart;
 let _tlGran   = 'monthly';
 let _recFilter = 'all';
-let _showAllInv = false;
-const RECENT_LIMIT = 5;
 
 // ── Reconciliation filter ─────────────────────────────────────────────────────
 function setRecFilter(f) {{
@@ -754,7 +805,7 @@ function applyFilters() {{
 function resetFilters() {{
   ['fYear','fMonth','fCarrier','fService'].forEach(id => document.getElementById(id).value='');
   document.getElementById('fInvoice').value='';
-  _recFilter='all'; _showAllInv=false;
+  _recFilter='all';
   document.getElementById('btnAll').classList.add('active');
   document.getElementById('btnRecOnly').classList.remove('active');
   applyFilters();
@@ -845,17 +896,11 @@ function renderKPIs(invData, svcData, anomData, returnData) {{
   `;
 }}
 
-// ── Recent invoices (expandable) ──────────────────────────────────────────────
-function toggleAllInvoices() {{
-  _showAllInv = !_showAllInv;
-  // Re-render with current filtered data — grab from last applyFilters call
-  // Simplest: trigger full re-apply
-  applyFilters();
-}}
-
+// ── Recent invoices (scrollable — shows all filtered invoices, newest first,
+//    so the card fills its grid-row height instead of leaving dead space
+//    below a handful of rows) ────────────────────────────────────────────────
 function renderRecentInvoices(invData) {{
   const total = invData.length;
-  const shown = _showAllInv ? invData : invData.slice(0, RECENT_LIMIT);
 
   document.getElementById('recentInvCount').textContent =
     `(${{total}} faktura${{total!==1?'r':''}})`;
@@ -863,14 +908,13 @@ function renderRecentInvoices(invData) {{
   const body = document.getElementById('recentInvBody');
   if (!total) {{
     body.innerHTML = '<tr><td colspan="5" class="no-data">Inga fakturor.</td></tr>';
-    document.getElementById('showMoreBtn').style.display = 'none';
     return;
   }}
 
-  body.innerHTML = shown.map(i => {{
+  body.innerHTML = invData.map(i => {{
     const pending = i.status === 'Pending';
     const unconfirmed = UNCONFIRMED.has(i.status);
-    return `<tr class="inv-row${{unconfirmed?' pending-row':''}}" onclick="showInvoiceDetail('${{esc(i.invoice_no)}}')">
+    return `<tr class="inv-row${{unconfirmed?' pending-row':''}}" onclick="openModalView(showInvoiceDetail, ['${{esc(i.invoice_no)}}'])">
       <td style="white-space:nowrap">${{pending?'<em style="color:#ccc">—</em>':esc(i.date)}}</td>
       <td style="white-space:nowrap">${{esc(i.carrier)}}</td>
       <td><strong style="font-size:11px">${{esc(i.invoice_no)}}</strong></td>
@@ -878,17 +922,6 @@ function renderRecentInvoices(invData) {{
       <td>${{badge(i.status)}}</td>
     </tr>`;
   }}).join('');
-
-  const btn = document.getElementById('showMoreBtn');
-  if (total <= RECENT_LIMIT) {{
-    btn.style.display = 'none';
-  }} else {{
-    btn.style.display = 'block';
-    const hidden = total - RECENT_LIMIT;
-    btn.textContent = _showAllInv
-      ? '▲ Visa färre'
-      : `▼ Visa ${{hidden}} äldre faktura${{hidden!==1?'r':''}}`;
-  }}
 }}
 
 // ── Volume chart — kolli per month per carrier ─────────────────────────────────
@@ -925,6 +958,7 @@ function renderVolumeChart(svcData) {{
       data: {{labels:months, datasets}},
       options: {{
         responsive:true,
+        maintainAspectRatio:false,
         plugins: {{legend:{{position:'bottom'}},
           tooltip:{{callbacks:{{label:ctx=>' '+ctx.parsed.y.toLocaleString('sv-SE')+' st'}}}}}},
         scales: {{
@@ -1196,7 +1230,9 @@ function renderServiceCostTable(filtData) {{
 }}
 
 // ── Returns table (per carrier per month) ──────────────────────────────────────
+let _returnDetailData = [];
 function renderReturnsTable(filtData) {{
+  _returnDetailData = filtData;
   const agg={{}};
   filtData.forEach(r=>{{
     const k=r.carrier+'||'+r.month;
@@ -1208,11 +1244,151 @@ function renderReturnsTable(filtData) {{
   const totalAmt=filtData.reduce((s,r)=>s+r.amount,0);
   document.getElementById('returnsCount').textContent=totalCount?`(${{totalCount}} st, ${{fmt(totalAmt)}} SEK)`:'';
   document.getElementById('returnsBody').innerHTML = rows.length
-    ? rows.map(r=>`<tr>
+    ? rows.map(r=>`<tr class="inv-row" onclick="openModalView(showReturnDetail, ['${{esc(r.carrier)}}','${{esc(r.month)}}'])">
         <td>${{esc(r.carrier)}}</td><td>${{esc(r.month)||'–'}}</td>
         <td class="num">${{r.count.toLocaleString('sv-SE')}}</td>
         <td class="num">${{fmt(r.amount)}}</td></tr>`).join('')
     : '<tr><td colspan="4" class="no-data">Inga returer.</td></tr>';
+}}
+
+function showReturnDetail(carrier, month) {{
+  const rows = _returnDetailData
+    .filter(r => r.carrier===carrier && (r.month||'')===month)
+    .sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  if (!rows.length) return;
+
+  const total = rows.reduce((s,r)=>s+r.amount,0);
+  const reason = carrier==='PostNord'
+    ? 'Sändning till egen lageradress (43149) — retur.'
+    : 'Avgift för misslyckat leveransförsök / retur.';
+  const monthLabel = month || 'okänd månad';
+  const repeatRows = rows.filter(r => r.repeat_count > 1);
+
+  document.getElementById('modalTitle').textContent =
+    `${{carrier}} · Returer ${{monthLabel}}`;
+
+  const showOrigin = carrier === 'PostNord';
+  const rowsHtml = rows.map(r => {{
+    const repeatBadge = r.repeat_count > 1
+      ? ` <span style="background:#fde8e8;color:#c62828;font-size:10px;font-weight:700;
+          padding:1px 6px;border-radius:10px;margin-left:4px">returnerad ${{r.repeat_count}}x</span>`
+      : '';
+    const kolliTd = showOrigin
+      ? `<td style="font-size:11px;white-space:nowrap">${{esc(r.kolli_id)||'—'}}${{
+          r.kolli_id ? ` <button class="copy-btn" onclick="event.stopPropagation();copyToClipboard('${{esc(r.kolli_id)}}',this)">Kopiera</button>` : ''
+        }}</td>` : '';
+    const originTd = showOrigin
+      ? `<td>${{esc(r.origin)||'<span style="color:#ccc">okänt</span>'}}</td>` : '';
+    // PostNord rows drill into the kolli's full shipment history; Bring has
+    // no kolli-level linkage (see reason text above) so falls back to the
+    // invoice it was billed on.
+    const rowClick = (showOrigin && r.kolli_id)
+      ? `openModalView(showKolliDetail, ['${{esc(r.kolli_id)}}'])`
+      : `openModalView(showInvoiceDetail, ['${{esc(r.invoice_no)}}'])`;
+    return `<tr onclick="${{rowClick}}" style="cursor:pointer">
+      <td>${{esc(r.date)||'—'}}</td>
+      <td><strong style="font-size:11px">${{esc(r.invoice_no)}}</strong>${{repeatBadge}}</td>
+      ${{kolliTd}}
+      ${{originTd}}
+      <td class="num">${{fmt(r.amount)}}</td>
+    </tr>`;
+  }}).join('');
+
+  const kolliCol = showOrigin ? '<th>Kollinummer</th>' : '';
+  const originCol = showOrigin ? '<th>Ursprunglig destination</th>' : '';
+  const repeatNote = repeatRows.length
+    ? `<p style="font-size:11px;color:#c62828;margin-top:8px">
+        ${{repeatRows.length}} sändning${{repeatRows.length!==1?'ar':''}} denna månad har
+        returnerats mer än en gång — se markerade rader.</p>`
+    : '';
+
+  document.getElementById('modalBody').innerHTML = `
+    <div class="modal-section">
+      <h4>Sammanfattning</h4>
+      <div class="info-grid">
+        <div class="info-item"><div class="ilabel">Transportör</div><div class="ivalue">${{esc(carrier)}}</div></div>
+        <div class="info-item"><div class="ilabel">Månad</div><div class="ivalue">${{esc(monthLabel)}}</div></div>
+        <div class="info-item"><div class="ilabel">Antal returer</div><div class="ivalue">${{rows.length}}</div></div>
+        <div class="info-item"><div class="ilabel">Total kostnad</div><div class="ivalue">${{fmt(total)}} SEK</div></div>
+      </div>
+      <p style="font-size:11px;color:#999;margin-top:8px">${{esc(reason)}}</p>
+      ${{repeatNote}}
+    </div>
+    <div class="modal-section">
+      <h4>Returer denna månad</h4>
+      <table>
+        <thead><tr><th>Datum</th><th>Faktura #</th>${{kolliCol}}${{originCol}}<th class="num">Kostnad (SEK)</th></tr></thead>
+        <tbody>${{rowsHtml}}</tbody>
+      </table>
+      <p style="font-size:11px;color:#999;margin-top:8px">${{
+        showOrigin ? 'Klicka på en rad för att se hela kollits historik.'
+                   : 'Klicka på en rad för att öppna fakturan.'
+      }}</p>
+    </div>`;
+
+  document.getElementById('modalOverlay').classList.add('open');
+  document.body.style.overflow='hidden';
+}}
+
+// ── Kolli detail (full shipment history for one PostNord kolli_id) ─────────────
+function showKolliDetail(kolliId) {{
+  const hist = (KOLLI_HISTORY[kolliId] || []).slice().sort((a,b) => (a.date||'').localeCompare(b.date||''));
+
+  document.getElementById('modalTitle').innerHTML =
+    `Kolli ${{esc(kolliId)}} <button class="copy-btn" onclick="copyToClipboard('${{esc(kolliId)}}',this)">Kopiera</button>`;
+
+  if (!hist.length) {{
+    document.getElementById('modalBody').innerHTML =
+      '<div class="modal-section"><p class="no-data">Ingen historik hittad för detta kolli.</p></div>';
+    document.getElementById('modalOverlay').classList.add('open');
+    document.body.style.overflow='hidden';
+    return;
+  }}
+
+  const returns = hist.filter(h => h.is_return);
+  const total = hist.reduce((s,h) => s+h.amount, 0);
+
+  const rowsHtml = hist.map(h => {{
+    const dest = `${{esc(h.postal)}} ${{esc(h.city)}}`.trim() || '<span style="color:#ccc">okänt</span>';
+    const typeBadge = h.is_return
+      ? '<span style="background:#fde8e8;color:#c62828;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px">RETUR</span>'
+      : '<span style="background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px">LEVERANS</span>';
+    return `<tr onclick="openModalView(showInvoiceDetail, ['${{esc(h.invoice_no)}}'])" style="cursor:pointer">
+      <td>${{esc(h.date)||'—'}}</td>
+      <td>${{typeBadge}}</td>
+      <td>${{dest}}</td>
+      <td><strong style="font-size:11px">${{esc(h.invoice_no)}}</strong></td>
+      <td class="num">${{fmt(h.amount)}}</td>
+    </tr>`;
+  }}).join('');
+
+  const repeatNote = returns.length > 1
+    ? `<p style="font-size:11px;color:#c62828;margin-top:8px">
+        Detta kolli har returnerats ${{returns.length}} gånger — ovanligt, värt att undersöka.</p>`
+    : '';
+
+  document.getElementById('modalBody').innerHTML = `
+    <div class="modal-section">
+      <h4>Sammanfattning</h4>
+      <div class="info-grid">
+        <div class="info-item"><div class="ilabel">Kollinummer</div><div class="ivalue">${{esc(kolliId)}}</div></div>
+        <div class="info-item"><div class="ilabel">Antal händelser</div><div class="ivalue">${{hist.length}}</div></div>
+        <div class="info-item"><div class="ilabel">Antal returer</div><div class="ivalue">${{returns.length}}</div></div>
+        <div class="info-item"><div class="ilabel">Total kostnad</div><div class="ivalue">${{fmt(total)}} SEK</div></div>
+      </div>
+      ${{repeatNote}}
+    </div>
+    <div class="modal-section">
+      <h4>Historik för detta kolli</h4>
+      <table>
+        <thead><tr><th>Datum</th><th>Typ</th><th>Destination</th><th>Faktura #</th><th class="num">Kostnad (SEK)</th></tr></thead>
+        <tbody>${{rowsHtml}}</tbody>
+      </table>
+      <p style="font-size:11px;color:#999;margin-top:8px">Klicka på en rad för att öppna fakturan.</p>
+    </div>`;
+
+  document.getElementById('modalOverlay').classList.add('open');
+  document.body.style.overflow='hidden';
 }}
 
 // ── Anomaly table ─────────────────────────────────────────────────────────────
@@ -1304,9 +1480,57 @@ function showInvoiceDetail(invNo) {{
 function closeModal() {{
   document.getElementById('modalOverlay').classList.remove('open');
   document.body.style.overflow='';
+  _modalStack = []; _currentView = null;
+  document.getElementById('modalBackBtn').style.display = 'none';
 }}
 function closeModalOnBg(e) {{ if(e.target===document.getElementById('modalOverlay')) closeModal(); }}
 document.addEventListener('keydown', e=>{{ if(e.key==='Escape') closeModal(); }});
+
+// ── Modal navigation (back-stack) ──────────────────────────────────────────────
+// Each show*Detail function only renders — it doesn't know or care whether it
+// was reached via a fresh click or a "Tillbaka" press. openModalView() is the
+// only thing that pushes history, so every entry point into the modal must go
+// through it (never call show*Detail directly from onclick).
+let _modalStack = [];
+let _currentView = null;
+
+function openModalView(fn, args) {{
+  if (_currentView) _modalStack.push(_currentView);
+  _currentView = {{fn, args}};
+  fn(...args);
+  document.getElementById('modalBackBtn').style.display = _modalStack.length ? 'inline-flex' : 'none';
+}}
+
+function modalGoBack() {{
+  const prev = _modalStack.pop();
+  if (!prev) return;
+  _currentView = prev;
+  prev.fn(...prev.args);
+  document.getElementById('modalBackBtn').style.display = _modalStack.length ? 'inline-flex' : 'none';
+}}
+
+// ── Copy to clipboard ───────────────────────────────────────────────────────
+function copyToClipboard(text, btnEl) {{
+  const done = () => {{
+    if (!btnEl) return;
+    const orig = btnEl.textContent;
+    btnEl.textContent = '✓ Kopierat';
+    setTimeout(() => {{ btnEl.textContent = orig; }}, 1200);
+  }};
+  if (navigator.clipboard && navigator.clipboard.writeText) {{
+    navigator.clipboard.writeText(text).then(done).catch(() => _fallbackCopy(text, done));
+  }} else {{
+    _fallbackCopy(text, done);
+  }}
+}}
+function _fallbackCopy(text, cb) {{
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try {{ document.execCommand('copy'); }} catch (e) {{}}
+  document.body.removeChild(ta);
+  if (cb) cb();
+}}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 applyFilters();

@@ -84,7 +84,7 @@ INVOICE_LINES_FIELDS = [
     "from_country", "to_country", "quantity", "unit", "weight_kg", "unit_price",
     "discount_percent", "vat_type", "amount", "line_type", "classified_by",
     "classification_confidence", "manual_review_required", "shipment_date",
-    "chargeable_weight_kg", "is_return",
+    "chargeable_weight_kg", "is_return", "to_postal", "to_city",
 ]
 
 SURCHARGE_LINES_FIELDS = [

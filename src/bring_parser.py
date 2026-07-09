@@ -145,6 +145,7 @@ class BringInvoiceLine:
             # Bring bills Parcel by actual weight — weight_kg IS the chargeable
             # weight (no separate volumetric figure like PostNord's fraktdr_vikt).
             "chargeable_weight_kg": self.weight_kg,
+            "to_postal": self.to_postal,
         }
 
     def to_surcharge_dict(self) -> dict:
