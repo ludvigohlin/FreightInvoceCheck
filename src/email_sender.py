@@ -111,62 +111,6 @@ def _pending_table(pending_items: list) -> str:
     )
 
 
-def send_idle_email(
-    run_id: str,
-    logger: ProcessingLogger,
-    reason: str = "Inga filer i inkorg.",
-    log_counts: dict | None = None,
-    pending_items: list | None = None,
-) -> bool:
-    """
-    Send a brief 'nothing new' status email so the user knows the job ran.
-    Returns True on success, False on failure (non-fatal).
-    """
-    if not config.SEND_EMAIL:
-        logger.info("EmailSender", "Email sending disabled (SEND_EMAIL=false).")
-        return False
-
-    try:
-        import win32com.client  # type: ignore
-    except ImportError:
-        logger.warning("EmailSender", "pywin32 not installed — email skipped.")
-        return False
-
-    try:
-        lc = log_counts or {}
-        has_issues = lc.get("ERROR", 0) or lc.get("WARNING", 0)
-        status_color = "#c62828" if lc.get("ERROR", 0) else "#e65100" if has_issues else "#546e7a"
-
-        subject = f"Freight Invoice Control — {run_id[:10]} — Ingen ny faktura"
-
-        html_body = (
-            f'<html><body style="{_STYLE}">'
-            f'<p style="font-size:17px;font-weight:700;color:{status_color};margin:0 0 10px">'
-            f'Ingen ny faktura</p>'
-            f'<p style="font-size:13px;color:#555;margin:0 0 8px">{reason}</p>'
-            f'<table style="border-collapse:collapse;margin-bottom:16px">'
-            f'{_log_row(log_counts)}'
-            f'</table>'
-            f'{_pending_table(pending_items or [])}'
-            f'<p style="font-size:11px;color:#aaa;margin:20px 0 0">'
-            f'Run {run_id} &nbsp;·&nbsp; Freight Invoice Control &nbsp;·&nbsp; Isicom AB</p>'
-            f'</body></html>'
-        )
-
-        outlook = win32com.client.Dispatch("Outlook.Application")
-        mail = outlook.CreateItem(0)
-        mail.To = _RECIPIENT
-        mail.Subject = subject
-        mail.HTMLBody = html_body
-        mail.Send()
-        logger.info("EmailSender", f"Idle status email sent to {_RECIPIENT}")
-        return True
-
-    except Exception as e:
-        logger.warning("EmailSender", f"Email send failed: {e}", error=e)
-        return False
-
-
 def send_summary_email(
     run_id: str,
     summary_md_path: Path,

@@ -78,6 +78,9 @@ class Service:
     shipments: int                  # number of distinct sändningar (deliveries)
     total_ex_vat: float
     packages: int = 0               # total kolli/lines (for Bring: > shipments when multi-kolli orders)
+    avg_weight_kg: Optional[float] = None  # avg fraktdragande (chargeable) weight across
+                                            # this service's BaseFreight lines; same
+                                            # fraktdr_vikt→weight_kg fallback as Invoice.avg_weight_kg
 
 
 @dataclass
@@ -525,8 +528,8 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
     # Kolli > Sändningar for Bring (multi-kolli shipments); equal for PostNord (1 kolli = 1 sändning).
     # All "Snitt" averages divide by kolli (the billed unit), not sändningar, so a multi-kolli
     # shipment doesn't understate the true per-package/per-pall cost.
-    WIDTHS = [24, 12, 10, 16, 14, 16, 16, 16, 16, 16, 18]
-    NC = 11
+    WIDTHS = [24, 12, 10, 16, 14, 16, 16, 16, 16, 16, 18, 16]
+    NC = 12
 
     r = 4
     for c in carriers:
@@ -536,7 +539,7 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
         COLS = ["Tjänst", "Sändningar", "Kolli", f"Basfrakt ({ccy})", f"Bränsle ({ccy})",
                 f"Övr. tillägg ({ccy})", f"Total ({ccy})",
                 f"Snitt basfrakt ({ccy})", f"Snitt bränsle ({ccy})", f"Snitt övr. tillägg ({ccy})",
-                f"Snitt / kolli ({ccy})"]
+                f"Snitt / kolli ({ccy})", "Snitt vikt (kg)"]
 
         # Index service-level surcharges (those that could be attributed to a service type)
         svc_fuel: dict[str, float] = {}
@@ -571,6 +574,8 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
         r += 1
 
         data_start = r
+        weight_sum_kg = 0.0
+        weight_kolli  = 0
         for svc in [s for s in d.services if s.carrier == c]:
             fuel   = svc_fuel.get(svc.service_name, 0.0)
             other  = svc_other.get(svc.service_name, 0.0)
@@ -596,6 +601,10 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
             _c(ws, r, 9, avg_fuel if fuel else None, align="right", fill=cf, border=_box, fmt=_SEK)
             _c(ws, r, 10, avg_other if other else None, align="right", fill=cf, border=_box, fmt=_SEK)
             _c(ws, r, 11, avg_s if kolli else None, align="right", fill=cf, border=_box, fmt=_SEK)
+            _c(ws, r, 12, svc.avg_weight_kg, align="right", fill=cf, border=_box, fmt=_KG)
+            if svc.avg_weight_kg is not None and kolli:
+                weight_sum_kg += svc.avg_weight_kg * kolli
+                weight_kolli  += kolli
             r += 1
 
         # Invoice-level (unattributed) surcharges — shown as separate row
@@ -610,7 +619,7 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
                align="right", fill=_AI_F, border=_box, fmt=_SEK, italic=True)
             _c(ws, r, 7, unattr_fuel + unattr_other,
                align="right", fill=_AI_F, border=_box, fmt=_SEK, italic=True)
-            for col in (8, 9, 10, 11):
+            for col in (8, 9, 10, 11, 12):
                 _c(ws, r, col, None, fill=_AI_F, border=_box)
             r += 1
 
@@ -620,7 +629,7 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
             for col in (2, 3, 4, 5, 6):
                 _c(ws, r, col, None, border=_box)
             _c(ws, r, 7, u.amount, align="right", fill=cf, border=_box, fmt=_SEK)
-            for col in (8, 9, 10, 11):
+            for col in (8, 9, 10, 11, 12):
                 _c(ws, r, col, None, border=_box)
             r += 1
 
@@ -636,6 +645,9 @@ def _build_services(wb: Workbook, d: SummaryInput, carriers: list[str],
         for col, letter in [(8, "D"), (9, "E"), (10, "F"), (11, "G")]:
             _c(ws, r, col, f"=IF(B{r}>0,{letter}{r}/B{r},\"\")", bold=True, align="right",
                fill=_SUB_F, border=_box, fmt=_SEK)
+        # Weighted average across services (weighted by kolli, not a simple avg-of-avgs)
+        total_weight = round(weight_sum_kg / weight_kolli, 1) if weight_kolli else None
+        _c(ws, r, 12, total_weight, bold=True, align="right", fill=_SUB_F, border=_box, fmt=_KG)
         r += 2
 
     ws.freeze_panes = "A4"

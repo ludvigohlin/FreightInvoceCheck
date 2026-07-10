@@ -71,7 +71,7 @@ from src.claude_client import (
 )
 from src.run_exporter import write_run_export
 from src.dashboard_writer import write_html_dashboard
-from src.email_sender import send_summary_email, send_idle_email
+from src.email_sender import send_summary_email
 
 
 def parse_args():
@@ -119,11 +119,6 @@ def main():
         logger.info("Main", "No files found in inbox. Exiting.")
         if not args.dry_run:
             write_file_inventory([], logger)
-            send_idle_email(
-                run_id, logger,
-                reason="Inga filer hittades i 00_Inbox — inget att bearbeta.",
-                log_counts=logger.get_counts(),
-            )
         _print_summary(run_id, scan_ts, [], [], [], [], [], logger)
         return
 
@@ -593,12 +588,11 @@ def main():
         elif not all_invoice_headers and file_records:
             reason_parts.append("Inga fullständiga fakturapar kunde matchas i denna körning.")
         reason = " ".join(reason_parts) or "Inga nya fakturor att rapportera."
-        send_idle_email(
-            run_id, logger,
-            reason=reason,
-            log_counts=log_counts,
-            pending_items=missing_bring,
-        )
+        # No email here — running on every login/unlock (see scheduled task
+        # triggers) would otherwise send a "nothing new" mail on every login.
+        # User only wants a mail when there's actually a new invoice (Step 9,
+        # send_summary_email branch above). Reason still logged for troubleshooting.
+        logger.info("Main", f"Step 9: No email sent — {reason}")
 
     # â”€â”€ File movement (if configured) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if config.MOVE_FILES_AFTER_PROCESSING:

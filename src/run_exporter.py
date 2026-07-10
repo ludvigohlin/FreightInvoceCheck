@@ -148,7 +148,7 @@ def _build_summary_input(
     services: list[Service]        = []
     unallocated: list[Unallocated] = []
 
-    svc_agg: dict = defaultdict(lambda: {"shipments": set(), "total": 0.0, "lines": 0})
+    svc_agg: dict = defaultdict(lambda: {"shipments": set(), "total": 0.0, "lines": 0, "weights": []})
 
     # Headers with 0 parseable lines → unallocated
     header_map = {(h.carrier, h.invoice_number): h for h in headers}
@@ -182,14 +182,22 @@ def _build_summary_input(
             # PostNord lines always have quantity=1, so behaviour is unchanged for PostNord.
             qty = max(int(getattr(ln, "quantity", 1) or 1), 1)
             svc_agg[(carrier, cat)]["lines"] += qty
+            # Same fraktdr_vikt→weight_kg fallback as the invoice-level average above.
+            w = getattr(ln, "fraktdr_vikt", None)
+            if w is None:
+                w = getattr(ln, "weight_kg", None)
+            if w is not None:
+                svc_agg[(carrier, cat)]["weights"].append(w)
 
     for (carrier, cat), d in sorted(svc_agg.items(), key=lambda x: -x[1]["total"]):
+        svc_weights = d["weights"]
         services.append(Service(
-            carrier      = carrier,
-            service_name = _SVC_LABEL.get(cat, cat),
-            shipments    = len(d["shipments"]),
-            total_ex_vat = round(d["total"], 2),
-            packages     = d["lines"],
+            carrier       = carrier,
+            service_name  = _SVC_LABEL.get(cat, cat),
+            shipments     = len(d["shipments"]),
+            total_ex_vat  = round(d["total"], 2),
+            packages      = d["lines"],
+            avg_weight_kg = round(sum(svc_weights) / len(svc_weights), 1) if svc_weights else None,
         ))
 
     # Reconciliation gaps (invoices where line sum ≠ header total) → unallocated
